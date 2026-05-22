@@ -124,10 +124,12 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 		r.Get("/api/video/{id}", s.handleVideoDetail)
 		r.Put("/api/video/{id}/tags", s.handleUpdateVideoTags)
 		r.Post("/api/video/{id}/like", s.handleLike)
+		r.Delete("/api/video/{id}/like", s.handleUnlike)
 		r.Post("/api/video/{id}/view", s.handleView)
 		r.Post("/api/video/{id}/hide", s.handleHideVideo)
 		r.Post("/api/upload", s.handleUploadVideo)
 		r.Get("/api/tags", s.handleTags)
+		r.Post("/api/shorts/next", s.handleShortsNext)
 
 		// 代理路由同样需要鉴权，防止绕过
 		r.Get("/p/stream/{driveID}/{fileID}", s.handleStream)
@@ -332,6 +334,93 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// shortsNextReq 客户端把当前轮已看过的 video id 列表传上来，
+// 服务器从未在列表中的视频里随机抽 count 个返回。
+type shortsNextReq struct {
+	SeenIDs []string `json:"seenIds"`
+	Count   int      `json:"count"`
+}
+
+// ShortsItemDTO 是短视频流单条的精简结构。比 VideoDTO 多 videoSrc / poster，
+// 方便前端直接喂给 <video>，不必再为每条请求 /api/video/:id。
+type ShortsItemDTO struct {
+	VideoDTO
+	VideoSrc string `json:"videoSrc"`
+	Poster   string `json:"poster"`
+}
+
+// handleShortsNext 为短视频模式提供"不重复随机视频"接口。
+//
+// 行为：
+//   - 入参 seenIds 为客户端当前轮已看过的视频 id（来自 localStorage）
+//   - 服务器从未在 seenIds 中的可见视频里随机抽至多 count 条返回
+//   - 当返回数量 < count 且小于全库可见总数时，说明本轮即将结束，
+//     返回 roundComplete=true，前端应在用户看完返回的这些后清空本地已看记录开新一轮
+//   - 当 seenIds 已经覆盖全库时，本接口直接返回新一轮的随机一批
+//     （传 seenIds=[] 即可让客户端在轮次完成后重新开始）
+func (s *Server) handleShortsNext(w http.ResponseWriter, r *http.Request) {
+	var body shortsNextReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	count := body.Count
+	if count <= 0 {
+		count = 5
+	}
+	if count > 20 {
+		count = 20
+	}
+
+	total, err := s.Catalog.CountVisibleVideos(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 如果客户端已看记录已经 ≥ 全库，则视为新一轮，直接忽略 seenIds
+	exclude := body.SeenIDs
+	if total > 0 && len(exclude) >= total {
+		exclude = nil
+	}
+
+	items, err := s.Catalog.RandomVideosExcluding(r.Context(), exclude, count)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 注入 sourceLabel 以便前端展示来源网盘
+	driveLabels := make(map[string]string)
+	out := make([]ShortsItemDTO, 0, len(items))
+	for _, v := range items {
+		dto := mapVideo(v)
+		if label, ok := driveLabels[v.DriveID]; ok {
+			dto.SourceLabel = label
+		} else if d, err := s.Catalog.GetDrive(r.Context(), v.DriveID); err == nil {
+			label := driveKindLabel(d.Kind)
+			driveLabels[v.DriveID] = label
+			dto.SourceLabel = label
+		}
+		out = append(out, ShortsItemDTO{
+			VideoDTO: dto,
+			VideoSrc: videoSource(v),
+			Poster:   thumbnailURL(v),
+		})
+	}
+
+	// roundComplete: 服务端能给出的视频数小于 count，说明剩余可选已耗尽，
+	// 前端把这批播完后应该清空本地 seenIds 开新一轮。
+	roundComplete := len(out) < count
+
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":         out,
+		"total":         total,
+		"roundComplete": roundComplete,
+	})
+}
+
 type updateVideoTagsReq struct {
 	Tags []string `json:"tags"`
 }
@@ -363,6 +452,22 @@ func (s *Server) handleLike(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	likes, err := s.Catalog.IncrementLike(r.Context(), id)
 	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"likes": likes})
+}
+
+// handleUnlike 取消点赞：likes - 1（保底 0）。
+// 短视频模式中爱心按钮点击切换状态时使用。
+func (s *Server) handleUnlike(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	likes, err := s.Catalog.DecrementLike(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}

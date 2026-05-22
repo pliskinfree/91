@@ -1,0 +1,431 @@
+/* 短视频模式：沉浸式垂直滑动 feed。整个页面占满视口高度，
+   滚动靠原生 scroll-snap 实现 TikTok 式吸附切屏。 */
+
+.shorts-page {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  color: #fff;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* 长按选中、上下文菜单、iOS 长按浮层都不要 */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  /* 防止移动端在边缘滑动触发"上一页"导航 */
+  overscroll-behavior: none;
+}
+
+/* ---------- 顶部条 ---------- */
+.shorts-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  /* 用 padding-top 把 header 内容压到 safe area 下面，
+     这样刘海/状态栏不会盖住返回按钮 */
+  padding: env(safe-area-inset-top) 12px 0 12px;
+  height: calc(56px + env(safe-area-inset-top));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.55) 0%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  pointer-events: none;
+}
+
+.shorts-header__back,
+.shorts-header__icon-btn {
+  pointer-events: auto;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.shorts-header__actions {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shorts-header__title {
+  pointer-events: none;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+/* ---------- feed 列表 ---------- */
+.shorts-feed {
+  flex: 1;
+  overflow-y: scroll;
+  scroll-snap-type: y mandatory;
+  /* 隐藏滚动条，沉浸感 */
+  scrollbar-width: none;
+  /* 允许竖直方向 pan，水平方向给进度条 */
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+}
+.shorts-feed::-webkit-scrollbar {
+  display: none;
+}
+
+/* ---------- 单屏 ---------- */
+.shorts-slide {
+  position: relative;
+  width: 100%;
+  /* 100svh：smallest viewport height（地址栏永久占位的高度），
+     避免移动端浏览器地址栏弹出/收起时一屏高度跳动；
+     不支持的浏览器降级到 100dvh，再降级到 100vh。 */
+  height: 100svh;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  overflow: hidden;
+  background: #000;
+  cursor: pointer;
+}
+
+@supports not (height: 100svh) {
+  .shorts-slide {
+    height: 100dvh;
+  }
+}
+@supports not (height: 100dvh) {
+  .shorts-slide {
+    height: 100vh;
+  }
+}
+
+/* 模糊海报背景：填充黑边的部分 */
+.shorts-slide__bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  filter: blur(28px) brightness(0.55);
+  transform: scale(1.1); /* 模糊后边缘羽化，放大避免漏边 */
+  z-index: 0;
+}
+
+.shorts-slide__video,
+.shorts-slide__poster {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: auto;
+  object-fit: contain; /* 横屏视频不裁切，多余处由 __bg 顶上 */
+  z-index: 1;
+}
+
+/* 暂停时画面中央显示一个大三角 */
+.shorts-slide__paused {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 80px;
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  z-index: 3;
+  animation: shorts-paused-pop 160ms ease-out;
+}
+@keyframes shorts-paused-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 2x 倍速指示 */
+.shorts-slide__rate-hint {
+  position: absolute;
+  top: calc(80px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  z-index: 4;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: shorts-rate-in 120ms ease-out;
+}
+@keyframes shorts-rate-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -4px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* ---------- 底部信息覆盖层 ---------- */
+.shorts-slide__overlay {
+  position: absolute;
+  left: 0;
+  /* 给右侧操作栏让位 */
+  right: 76px;
+  /* 把信息层抬高一点，给底部进度条留 12px 触摸余量 */
+  bottom: calc(env(safe-area-inset-bottom) + 14px);
+  padding: 56px 16px 0 16px;
+  /* 更深、更高的渐变，确保浅色视频底部也能撑起标题对比度 */
+  background: linear-gradient(
+    to top,
+    rgba(0, 0, 0, 0.85) 0%,
+    rgba(0, 0, 0, 0.6) 45%,
+    rgba(0, 0, 0, 0.25) 80%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shorts-slide__title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.4;
+  font-weight: 700;
+  color: #fff;
+  /* 多层阴影叠加：近距离锐边 + 远距离弥散，浅色视频上也清楚 */
+  text-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.9),
+    0 2px 6px rgba(0, 0, 0, 0.85),
+    0 4px 18px rgba(0, 0, 0, 0.7);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.shorts-slide__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.shorts-slide__meta-item {
+  background: rgba(0, 0, 0, 0.4);
+  padding: 3px 8px;
+  border-radius: 999px;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.shorts-slide__detail {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #fff;
+  font-size: 12px;
+  text-decoration: none;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.shorts-slide__detail:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ---------- 右下角竖排操作栏（点赞等） ---------- */
+.shorts-slide__actions {
+  position: absolute;
+  right: 12px;
+  /* 底部抬高，避开进度条和 Home 指示器 */
+  bottom: calc(env(safe-area-inset-bottom) + 80px);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  z-index: 5;
+}
+
+.shorts-slide__action {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 0;
+  padding: 6px;
+  color: #fff;
+  cursor: pointer;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
+  transition: transform 120ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.shorts-slide__action:active {
+  transform: scale(0.92);
+}
+.shorts-slide__action.is-liked {
+  color: #ff4060;
+}
+.shorts-slide__action-count {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* ---------- 双击点赞的心形飞起动画 ---------- */
+.shorts-slide__heart-burst {
+  position: absolute;
+  /* x/y 通过 inline style 设置，加 translate 让心形以指点为中心 */
+  transform: translate(-50%, -50%);
+  color: #ff4060;
+  pointer-events: none;
+  z-index: 7;
+  animation: shorts-heart-pop 700ms cubic-bezier(0.22, 0.7, 0.3, 1) forwards;
+  filter: drop-shadow(0 4px 12px rgba(255, 64, 96, 0.55));
+}
+@keyframes shorts-heart-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.4) rotate(-12deg);
+  }
+  30% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.15) rotate(-6deg);
+  }
+  60% {
+    opacity: 1;
+    transform: translate(-50%, -75%) scale(1) rotate(-2deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -110%) scale(0.85) rotate(0);
+  }
+}
+
+/* ---------- 进度条 ---------- */
+/* 进度条容器是一条横跨视频底部的"hit area"，高度比视觉条粗很多，
+   方便用户用手指按到。视觉的细线条只在容器中下部展示。 */
+.shorts-slide__progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  /* 抬高到 safe area 之上，避开 Home 指示器 */
+  bottom: env(safe-area-inset-bottom);
+  height: 28px;
+  z-index: 6;
+  display: flex;
+  align-items: flex-end;
+  padding-bottom: 6px;
+  /* 拦截手势：进度条上的手指不要触发 feed 上下滚动 */
+  touch-action: none;
+  cursor: pointer;
+}
+
+/* 不在拖动时，整体淡一些；拖动时整个区域高亮 */
+.shorts-slide__progress-track {
+  width: 100%;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.28);
+  position: relative;
+  border-radius: 2px;
+  overflow: hidden;
+  transition: height 120ms ease, background 120ms ease;
+}
+
+.shorts-slide__progress-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 2px;
+  transition: width 80ms linear;
+}
+
+/* 拖动状态：进度条变粗、变亮，并显示当前时间 */
+.shorts-slide__progress.is-scrubbing .shorts-slide__progress-track {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.4);
+}
+.shorts-slide__progress.is-scrubbing .shorts-slide__progress-fill {
+  transition: none;
+  background: #fff;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.6);
+}
+
+/* 拖动时显示的时间文字 */
+.shorts-slide__progress-time {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+
+/* ---------- 空 / 加载提示 ---------- */
+.shorts-empty {
+  height: 100svh;
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.85);
+  scroll-snap-align: start;
+}
+@supports not (height: 100svh) {
+  .shorts-empty {
+    height: 100dvh;
+  }
+}
+
+.shorts-empty__link {
+  color: #fff;
+  text-decoration: underline;
+}
+
+.shorts-loading {
+  height: 60px;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 13px;
+}

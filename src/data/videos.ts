@@ -77,6 +77,36 @@ export function fetchTags(): Promise<TagItem[]> {
   return apiGet<TagItem[]>("/api/tags").catch(() => []);
 }
 
+/** 短视频模式单条记录。比 VideoItem 多 videoSrc / poster。 */
+export type ShortsItem = VideoItem & {
+  videoSrc: string;
+  poster: string;
+};
+
+/** 短视频"取下一批"接口的响应。 */
+export type ShortsNextResponse = {
+  items: ShortsItem[];
+  total: number;
+  /** true 表示这批返回少于 count，前端播放完毕后应清空 seenIds 开新一轮 */
+  roundComplete: boolean;
+};
+
+/**
+ * 拉取短视频流的下一批候选。把当前轮已看过的 video id 列表传给后端，
+ * 服务器从未在列表中的视频里随机抽 count 条返回。
+ *
+ * 失败时返回空批 + roundComplete=false，由调用方决定是否重试。
+ */
+export function fetchShortsNext(
+  seenIds: string[],
+  count: number
+): Promise<ShortsNextResponse> {
+  return apiJSON<ShortsNextResponse>("/api/shorts/next", {
+    method: "POST",
+    body: JSON.stringify({ seenIds, count }),
+  }).catch(() => ({ items: [], total: 0, roundComplete: false }));
+}
+
 async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(path, { credentials: "include" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);

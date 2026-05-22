@@ -4,11 +4,13 @@ import {
   Film,
   Menu,
   Play,
+  Sparkles,
   Upload,
   X,
 } from "lucide-react";
 
 const navItems = [
+  { to: "/shorts", label: "短视频", icon: Sparkles },
   { to: "/upload", label: "上传", icon: Upload },
   { to: "/list", label: "视频", icon: Film },
 ];

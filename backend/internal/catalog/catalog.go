@@ -184,6 +184,33 @@ func (c *Catalog) IncrementLike(ctx context.Context, id string) (int, error) {
 	return likes, nil
 }
 
+// DecrementLike 原子 -1（不会减到负数），返回最新点赞数。
+// 视频不存在时返回 sql.ErrNoRows。
+func (c *Catalog) DecrementLike(ctx context.Context, id string) (int, error) {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx,
+		`UPDATE videos SET likes = MAX(likes - 1, 0), updated_at = ? WHERE id = ?`,
+		time.Now().UnixMilli(), id)
+	if err != nil {
+		return 0, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return 0, sql.ErrNoRows
+	}
+	var likes int
+	if err := tx.QueryRowContext(ctx, `SELECT likes FROM videos WHERE id = ?`, id).Scan(&likes); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return likes, nil
+}
+
 // IncrementView 原子 +1，返回最新观看数。视频不存在时返回 sql.ErrNoRows。
 func (c *Catalog) IncrementView(ctx context.Context, id string) (int, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
@@ -563,6 +590,82 @@ func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, 
 		out = append(out, v)
 	}
 	return out, total, nil
+}
+
+// CountVisibleVideos 返回当前对前台可见的视频总数（未隐藏、且通过去重规则）。
+// 用于短视频模式判断"已经轮过一遍"。
+func (c *Catalog) CountVisibleVideos(ctx context.Context) (int, error) {
+	var total int
+	err := c.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM videos
+		  WHERE COALESCE(hidden, 0) = 0
+		    AND `+uniqueVideoWhereSQL,
+	).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+// RandomVideosExcluding 从对前台可见的视频里，随机返回 limit 个不在 excludeIDs 中的视频。
+// 短视频模式用：客户端把当前轮已看的视频 id 传过来，避免本轮重复。
+// 如果剩余可选数量 < limit，就返回所有可选项；调用方负责判断是否需要开新一轮。
+// limit <= 0 时返回 nil, nil。
+func (c *Catalog) RandomVideosExcluding(ctx context.Context, excludeIDs []string, limit int) ([]*Video, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	// 去重 excludeIDs，过滤空串
+	seen := make(map[string]struct{}, len(excludeIDs))
+	cleaned := make([]string, 0, len(excludeIDs))
+	for _, id := range excludeIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		cleaned = append(cleaned, id)
+	}
+
+	args := make([]any, 0, len(cleaned)+1)
+	whereSQL := `WHERE COALESCE(hidden, 0) = 0
+		           AND ` + uniqueVideoWhereSQL
+	if len(cleaned) > 0 {
+		placeholders := strings.Repeat("?,", len(cleaned))
+		placeholders = placeholders[:len(placeholders)-1]
+		whereSQL += " AND id NOT IN (" + placeholders + ")"
+		for _, id := range cleaned {
+			args = append(args, id)
+		}
+	}
+	args = append(args, limit)
+
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT `+allVideoCols+` FROM videos `+whereSQL+`
+		 ORDER BY RANDOM() LIMIT ?`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*Video
+	for rows.Next() {
+		v, err := scanVideo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 type DriveTeaserCounts struct {

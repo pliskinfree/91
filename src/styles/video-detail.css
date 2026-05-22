@@ -152,6 +152,11 @@
   height: 100%;
   object-fit: contain;
   display: block;
+  /* 禁掉 iOS Safari 长按弹出的"存储视频/拷贝"浮层，
+     以及长按时的文本选择高亮，避免和长按 2 倍速冲突 */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .video-player__status {
@@ -168,6 +173,37 @@
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   z-index: 2;
+}
+
+/* 长按 2 倍速时的角标提示 */
+.video-player__rate-hint {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(8, 9, 13, 0.72);
+  color: #fff;
+  font-size: var(--font-sm);
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  z-index: 3;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: video-player-rate-hint-in 120ms ease-out;
+}
+
+@keyframes video-player-rate-hint-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -4px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
 }
 
 /* ---------- Header (title + author + meta) ---------- */
