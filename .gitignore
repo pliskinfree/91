@@ -24,3 +24,8 @@ tools/
 # 编译产物
 backend/server
 tsconfig.tsbuildinfo
+
+# 91 爬虫脚本独立运行时的默认输出文件（backend 跑时会显式 --output 到 backend/data/spider91/，所以不会落在这里）
+91porn_videos.json
+91VideoSpider/91porn_videos.json
+91VideoSpider/data/

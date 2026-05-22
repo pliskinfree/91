@@ -446,6 +446,27 @@ func (c *Catalog) ListVideosByDrive(ctx context.Context, driveID string) ([]*Vid
 	return out, rows.Err()
 }
 
+// ListVideoFileIDsByDrive 只返回某 drive 下所有视频的 file_id 集合，
+// 比 ListVideosByDrive 轻量，spider91 crawler 用它把已知 viewkey 列表喂给 python 脚本。
+func (c *Catalog) ListVideoFileIDsByDrive(ctx context.Context, driveID string) ([]string, error) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT file_id FROM videos WHERE drive_id = ? AND file_id != ''`,
+		driveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var fid string
+		if err := rows.Scan(&fid); err != nil {
+			return nil, err
+		}
+		out = append(out, fid)
+	}
+	return out, rows.Err()
+}
+
 func (c *Catalog) DeleteVideo(ctx context.Context, id string) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {

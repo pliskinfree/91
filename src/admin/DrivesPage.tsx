@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
+import { Download, Plus, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 import * as api from "./api";
 import { useToast } from "./ToastContext";
 import { Modal } from "./Modal";
@@ -11,6 +11,7 @@ const kindLabel: Record<string, string> = {
   pikpak: "PikPak",
   wopan: "联通沃盘",
   onedrive: "OneDrive",
+  spider91: "91 爬虫",
 };
 
 type Kind = api.AdminDrive["kind"];
@@ -137,7 +138,11 @@ export function DrivesPage() {
   async function handleRescan(d: api.AdminDrive) {
     try {
       await api.rescan(d.id);
-      show("已触发扫描，可稍后刷新视频列表查看", "success");
+      if (d.kind === "spider91") {
+        show("已触发抓取任务，需要 2-4 分钟，可稍后刷新视频列表查看", "success");
+      } else {
+        show("已触发扫描，可稍后刷新视频列表查看", "success");
+      }
     } catch (e) {
       show(e instanceof Error ? e.message : "触发失败", "error");
     }
@@ -196,13 +201,21 @@ export function DrivesPage() {
                 <td data-label="类型">{kindLabel[d.kind] ?? d.kind}</td>
                 <td data-label="ID" className="admin-mono-cell">{d.id}</td>
                 <td data-label="状态">
-                  <StatusTag status={d.status} error={d.lastError} hasCred={d.hasCredential} />
+                  <StatusTag kind={d.kind} status={d.status} error={d.lastError} hasCred={d.hasCredential} />
                 </td>
                 <td data-label="生成状态">
                   <GenerationStatusCell drive={d} />
                 </td>
                 <td data-label="扫描根" className="admin-mono-cell">
-                  {d.scanRootId || d.rootId}
+                  {d.kind === "spider91" ? (
+                    <span className="admin-text-faint">
+                      {d.lastCrawlAt
+                        ? `上次抓取 ${formatRelativeTime(d.lastCrawlAt)}`
+                        : "尚未抓取"}
+                    </span>
+                  ) : (
+                    d.scanRootId || d.rootId
+                  )}
                 </td>
                 <td data-label="本地占用">
                   <StorageCell usage={storage?.drives[d.id]} />
@@ -223,7 +236,15 @@ export function DrivesPage() {
                 </td>
                 <td className="is-actions" data-label="操作">
                   <button className="admin-btn" onClick={() => handleRescan(d)}>
-                    <RefreshCw size={13} /> 重扫
+                    {d.kind === "spider91" ? (
+                      <>
+                        <Download size={13} /> 立即抓取
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw size={13} /> 重扫
+                      </>
+                    )}
                   </button>{" "}
                   <button
                     className="admin-btn"
@@ -422,18 +443,26 @@ function formatClock(value: string): string {
 }
 
 function StatusTag({
+  kind,
   status,
   error,
   hasCred,
 }: {
+  kind: string;
   status: string;
   error?: string;
   hasCred: boolean;
 }) {
-  if (!hasCred) {
+  // spider91 没有用户凭证概念，直接看 status；保存后默认就是 "ok"
+  if (kind !== "spider91" && !hasCred) {
     return <span className="admin-status is-pending">未配置凭证</span>;
   }
-  if (status === "ok") return <span className="admin-status is-ok">已连接</span>;
+  if (status === "ok") {
+    if (kind === "spider91") {
+      return <span className="admin-status is-ok">已就绪</span>;
+    }
+    return <span className="admin-status is-ok">已连接</span>;
+  }
   if (status === "error")
     return (
       <span className="admin-status is-error" title={error}>
@@ -502,27 +531,32 @@ function DriveForm({
           <option value="pikpak">PikPak</option>
           <option value="wopan">联通沃盘</option>
           <option value="onedrive">OneDrive</option>
+          <option value="spider91">91 爬虫</option>
         </select>
       </div>
-      <div className="admin-form__row">
-        <label>根目录 ID</label>
-        <input
-          value={form.rootId}
-          onChange={(e) => set("rootId", e.target.value)}
-          placeholder={form.kind === "pikpak" ? "留空表示根目录" : form.kind === "onedrive" ? "root" : "0"}
-        />
-      </div>
-      <div className="admin-form__row">
-        <label>扫描起点目录 ID</label>
-        <input
-          value={form.scanRootId}
-          onChange={(e) => set("scanRootId", e.target.value)}
-          placeholder="留空则使用根目录"
-        />
-        <div className="admin-form__help">
-          可以指定一个子目录作为视频库入口，避免扫描整个网盘
-        </div>
-      </div>
+      {form.kind !== "spider91" && (
+        <>
+          <div className="admin-form__row">
+            <label>根目录 ID</label>
+            <input
+              value={form.rootId}
+              onChange={(e) => set("rootId", e.target.value)}
+              placeholder={form.kind === "pikpak" ? "留空表示根目录" : form.kind === "onedrive" ? "root" : "0"}
+            />
+          </div>
+          <div className="admin-form__row">
+            <label>扫描起点目录 ID</label>
+            <input
+              value={form.scanRootId}
+              onChange={(e) => set("scanRootId", e.target.value)}
+              placeholder="留空则使用根目录"
+            />
+            <div className="admin-form__help">
+              可以指定一个子目录作为视频库入口，避免扫描整个网盘
+            </div>
+          </div>
+        </>
+      )}
 
       <hr className="admin-form__divider" />
 
@@ -566,6 +600,8 @@ function credentialHelp(kind: Kind, isEdit: boolean): string {
       return `需要 access_token 和 refresh_token。后续会加扫码/短信登录入口，第一版只能手工粘贴。${note}`;
     case "onedrive":
       return `按 OpenList 默认方式，通过 api.oplist.org 在线刷新 token。只需要 refresh_token；保存后会自动回写新的 access_token / refresh_token。${note}`;
+    case "spider91":
+      return `91 爬虫源：每天凌晨自动跑 91VideoSpider/spider_91porn.py，从本月最热第 1 页起翻页，遇到已爬过的 viewkey 自动跳过，凑够 target_new（默认 15）个新视频后停止。需要服务器装好 python3 + requests + beautifulsoup4 + lxml。${note}`;
     default:
       return "";
   }
@@ -701,11 +737,67 @@ function credentialFields(kind: Kind): Array<{
           placeholder: "SharePoint site id",
         },
       ];
+    case "spider91":
+      return [
+        {
+          key: "target_new",
+          label: "每次爬取的新视频数",
+          placeholder: "15",
+          help: "默认 15。从 91porn 本月最热第 1 页起翻页，遇到已爬过的 viewkey 自动跳过，凑够这么多个新视频后停止。",
+        },
+        {
+          key: "crawl_hour",
+          label: "凌晨触发的小时（0-23）",
+          placeholder: "0",
+          help: "默认 0，即在 00:00-00:59 之间触发。距离上次成功爬取至少 12 小时才会再触发。",
+        },
+        {
+          key: "proxy",
+          label: "下载代理（可选）",
+          placeholder: "留空则使用 HTTPS_PROXY 环境变量",
+          help: "91porn CDN 在海外，国内服务器直连通常很慢。可填 http://127.0.0.1:7890 这样的本地代理；留空则自动读 backend 进程的 HTTPS_PROXY 环境变量。",
+        },
+        {
+          key: "python_path",
+          label: "python 可执行文件",
+          placeholder: "python3",
+          help: "默认 python3；可填绝对路径，例如 /usr/bin/python3 或 conda 环境路径。",
+        },
+        {
+          key: "script_path",
+          label: "spider_91porn.py 路径（可选）",
+          placeholder: "留空自动定位 91VideoSpider/spider_91porn.py",
+          help: "服务启动时会从 backend/ 的父目录推断。如果脚本被你挪到了别处，请填绝对路径。",
+        },
+      ];
   }
 }
 
 function defaultRootId(kind: Kind): string {
   if (kind === "pikpak") return "";
   if (kind === "onedrive") return "root";
+  if (kind === "spider91") return "/";
   return "0";
+}
+
+// formatRelativeTime 把 unix 秒格式化成"刚刚 / N 分钟前 / N 小时前 / N 天前"，
+// 用于网盘列表里显示 spider91 的 lastCrawlAt。
+function formatRelativeTime(unixSeconds: number): string {
+  if (!unixSeconds || unixSeconds <= 0) return "尚未抓取";
+  const nowMs = Date.now();
+  const thenMs = unixSeconds * 1000;
+  const deltaSec = Math.max(0, Math.floor((nowMs - thenMs) / 1000));
+  if (deltaSec < 60) return "刚刚";
+  const m = Math.floor(deltaSec / 60);
+  if (m < 60) return `${m} 分钟前`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} 小时前`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d} 天前`;
+  // 太久了直接给个本地化的日期
+  try {
+    return new Date(thenMs).toLocaleDateString();
+  } catch {
+    return `${d} 天前`;
+  }
 }

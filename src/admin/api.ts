@@ -54,13 +54,15 @@ export function me() {
 
 export type AdminDrive = {
   id: string;
-  kind: "quark" | "p115" | "pikpak" | "wopan" | "onedrive";
+  kind: "quark" | "p115" | "pikpak" | "wopan" | "onedrive" | "spider91";
   name: string;
   rootId: string;
   scanRootId: string;
   status: string;
   lastError?: string;
   hasCredential: boolean;
+  // spider91 上次成功爬取时间（unix 秒）；其它 kind 留空。
+  lastCrawlAt?: number;
   thumbnailGenerationStatus?: DriveGenerationStatus;
   previewGenerationStatus?: DriveGenerationStatus;
   thumbnailReadyCount: number;
@@ -100,7 +102,7 @@ export function getDriveStorage() {
 
 export type UpsertDriveInput = {
   id: string;
-  kind: "quark" | "p115" | "pikpak" | "wopan" | "onedrive";
+  kind: "quark" | "p115" | "pikpak" | "wopan" | "onedrive" | "spider91";
   name: string;
   rootId: string;
   scanRootId: string;

@@ -1889,3 +1889,73 @@ ac3 / dts / flac / opus / vorbis 一律重编 aac（音频码率小，1-2 分钟
 - mkv / avi：浏览器原生 `<video>` 多数无法播放，用户看到原生"无法播放"提示；如有需要，用户可以右键复制视频地址（302 后的 115 直链需要登录态，但这部分网页地址是 `/p/stream/<driveID>/<fileID>`，cookie 校验通过的浏览器能直接下载或在另一个具备 cookie 转发的工具里打开）。这台机器不再为 mkv/avi 做任何额外服务。
 
 至此 14.7（VLC 方案）和 14.8（ffprobe 智能转码）两条尝试都已撤销，回到"全部 302 直链"的最简实现。
+
+
+## 16. 91 爬虫源接入（spider91，已落地，2026-05-22）
+
+把 `91VideoSpider/spider_91porn.py` 包装成一种新的 drive 类型 `spider91`，每天凌晨自动跑一次爬虫"凑够 N 个新视频"，下载视频和封面到本地，作为视频源接入现有的列表/详情/标签/teaser 流水线。
+
+### 16.1 设计取舍
+
+- **保留 Python，子进程调用**：原脚本里 `strencode2` 解码视频直链的逻辑直接复用更稳；代价是部署机要装 Python 3 + bs4 + lxml。后续如果觉得多语言依赖太重，可以再翻译成 Go。
+- **"凑够 N 个新"语义**：早先方案是固定爬 page=1，但 91porn 本月最热 page 1 内容相对稳定，每天能爬到的新视频很少。改成 "从 page 1 起翻页，跳过已知 viewkey，凑够 target_new（默认 15）个新视频后停止"。具体做法：backend 每次启动 Python 前，把 catalog 里已入库的 viewkey 写到 `<driveDir>/.crawl/seen-<时间戳>.txt`，作为 `--seen-viewkeys-file` 参数传入；Python 内部维护 `skip_viewkeys` set，列表页解析时直接过滤，命中即跳过详情页请求。
+- **viewkey 做主键**：91porn 网站对每个视频的稳定标识，列表页/详情页 URL 都能拿到。`videos.id = "spider91-<driveID>-<viewkey>"`，`videos.file_id = "<viewkey>.<ext>"`，和 localupload 的 ID/FileID 解耦风格一致。
+- **视频文件后缀按 URL 真实后缀**：原本 hardcode 写 `.mp4`，但 91porn 直链的格式不固定（`.mp4` / `.flv` / 个别 `.m3u8`），盲存 `.mp4` 会让 ffmpeg 拿到错的容器结构。`detectVideoExt(url)` 解析路径扩展名，命中白名单（mp4/webm/mkv/mov/m4v/flv/avi）就用真实后缀，`.m3u8` 等流媒体清单回退 `.mp4`。`videos.ext` 字段也跟实际后缀保持一致。
+- **封面直接复用网站封面**：crawler 下载完封面后复制一份到 `data/previews/thumbs/<videoID>.jpg`，让 `/p/thumb/{videoID}` 路由不需要任何特例就能命中。同时 `videos.thumbnail_url` 设为 `/p/thumb/<videoID>`、`thumbnail_status = 'ready'`，让 thumb worker 自动跳过 spider91 视频。
+- **teaser 仍走 ffmpeg 流水线**：crawler 调 `OnNewVideo` 回调把新视频塞进当前 drive 的 preview worker 队列。
+- **走代理下载**：91porn CDN 节点在海外，国内直连只有几 KB/s。crawler 的 `http.Client` 用 `http.ProxyFromEnvironment`（读 `HTTPS_PROXY` 环境变量），并允许在 drive credentials 里通过 `proxy` 字段显式覆盖。**这是个重要修正**：自定义 `http.Transport` 默认不带 `Proxy: http.ProxyFromEnvironment`，必须显式加，否则会忽略 `HTTPS_PROXY` 环境变量直连——这是排查中花了最多时间的坑。
+- **统一 `91porn` 标签**：所有 spider91 视频在入库时打上 `91porn` 标签。`attachSpider91Crawler` 启动时调 `Catalog.CreateTagAndClassify("91porn", nil, "system")` 同时建标签 + 给已入库的视频按 author 字段补打；新视频入库时 crawler 直接设置 `Tags: []string{"91porn"}` 让 `UpsertVideo` 自动同步 `video_tags` 表。
+- **管理后台 UI 适配**：spider91 不属于"网盘"，但复用 `/admin/drives` 页有意义（视频源、teaser、本地占用等列都通用）。做了几处 surgical 修补：状态列对 spider91 直接看 `status` 字段不要求凭证（"已就绪"/"错误"，不会显示"未配置凭证"）；操作按钮对 spider91 显示 "立即抓取"（图标 Download）而非"重扫"；表单隐藏"根目录 ID" / "扫描起点目录 ID"两行；"扫描根"列对 spider91 显示 "上次抓取 N 小时前"（`lastCrawlAt` 字段从 `drive.credentials.last_crawl_at` 提取）。
+
+### 16.2 文件改动
+
+- `91VideoSpider/spider_91porn.py`：加 `--target-new N` `--seen-viewkeys-file FILE` `--page N` `--output FILE` `--no-resume` `--quiet` 等 CLI 参数；`--target-new` 模式下从 page 1 起翻页直到累计处理 N 个新 viewkey 后停止，配合 `--seen-viewkeys-file` 把 backend 已入库的 viewkey 注入 skip set；保留无参数的全量模式作向后兼容。
+- `backend/internal/drives/spider91/driver.go`：实现 `drives.Drive`，存储结构 `<rootDir>/videos/<viewkey>.<ext>` + `<rootDir>/thumbs/<viewkey>.<ext>`，`StreamURL` 返回本地路径；`safeJoin` 防越界。
+- `backend/internal/drives/spider91/crawler.go`：`Crawler.RunOnce(ctx, targetNew)` 完成"查 catalog 已知 viewkey → 写 seen 列表 → 跑 python（target-new 模式）→ 解析 JSON → 顺序下载视频和封面（按真实后缀）→ 复制封面到 standard thumbs 目录 → upsert（带 `91porn` 标签）+ UpdateVideoMeta(thumbnail_status=ready) → OnNewVideo"。`detectVideoExt` / `detectThumbExt` 处理后缀；`http.Client` 通过 `http.ProxyFromEnvironment` + 可选 `ProxyURL` 走代理。
+- `backend/internal/catalog/catalog.go`：新增 `ListVideoFileIDsByDrive(driveID) ([]string, error)`，轻量查询某 drive 的所有 file_id，spider91 用它构造 seen 列表。
+- `backend/cmd/server/main.go`：新增 `App.spider91Crawlers` map，`attachDrive` 多一条 `case spider91.Kind`，`detachDrive` 清理；`shouldScanDrive` 排除 spider91（不参与 02:00-07:00 网盘扫描循环）；新增 `crawlerLoop` 每分钟轮询，命中 `crawl_hour` 窗口 + 距离上次成功 ≥ 12 小时就触发；`OnScanRequested` 对 spider91 走 `runSpider91Crawl` 而不是 `runScan`；`attachSpider91Crawler` 异步调 `Catalog.CreateTagAndClassify("91porn", nil, "system")` 建系统标签 + 给已入库的 spider91 视频按 author 字段补打。
+- `backend/internal/api/api.go`：`(s *Server).videoSource(v)` 通过 `Proxy.Registry` 检查 drive kind，spider91 视频回放路径 `/p/stream/...` 切到 `/p/spider91/<videoID>`；新增 `handleSpider91Video` 用 `http.ServeFile` 服务本地文件；`driveKindLabel` 加 `91 爬虫`。
+- `backend/internal/api/admin.go`：`handleListDrives` 响应里加 `lastCrawlAt`（从 `drive.credentials.last_crawl_at` 提取，仅 spider91 用）；`hasCredential` 不把 `last_crawl_at` 这种"运行状态字段"算成凭证，spider91 直接强制 `hasCred=true`。
+- `src/admin/api.ts`、`src/admin/DrivesPage.tsx`：`Kind` 联合类型加 `spider91`；表单 select 加选项；`credentialFields("spider91")` 返回 `target_new` / `crawl_hour` / `proxy` / `python_path` / `script_path` 五个字段；`defaultRootId("spider91") = "/"`；`StatusTag` 对 spider91 跳过凭证检查显示"已就绪"；操作按钮 spider91 变 "立即抓取" + Download 图标；表单隐藏"根目录 ID" / "扫描起点目录 ID"两行；"扫描根"列对 spider91 显示 "上次抓取 N 小时前"（用 `formatRelativeTime(lastCrawlAt)`）。
+- `README.md`：加"91 爬虫源"专门章节，说明部署前置条件（含代理）、字段、目录结构、触发逻辑、UI 适配、风险。
+
+### 16.3 凭证字段（写在 drive.Credentials）
+
+| key | 默认值 | 说明 |
+|---|---|---|
+| `target_new` | `15` | 每次爬取的新视频数（spider91.DefaultTargetNew） |
+| `crawl_hour` | `0` | 0-23，凌晨触发的小时 |
+| `proxy` | `（空）` | 下载代理 URL（如 `http://127.0.0.1:7890`）；为空时回退到 backend 进程的 `HTTPS_PROXY` 环境变量 |
+| `python_path` | `python3` | 解释器路径 |
+| `script_path` | （`defaultSpider91ScriptPath()` 自动定位） | spider_91porn.py 绝对路径 |
+| `last_crawl_at` | （自动写） | 最后一次成功完成的 unix 秒；通过 `lastCrawlAt` 字段暴露给 admin UI |
+
+`last_crawl_at` 仅由后端写入。admin UI 不显示其它凭证（凭证字段只通过 `hasCredential` 抽象暴露布尔值）。
+
+### 16.4 触发逻辑
+
+- 每分钟轮询一次（`crawlerLoop` ticker，独立于 02:00-07:00 的 `scanLoop`）
+- 当 `time.Now().Hour() == drive.Credentials["crawl_hour"]` 且 `now - last_crawl_at >= 12h` 时触发
+- 管理后台点 "立即抓取" 按钮立刻触发，不受时间窗约束
+- 多个 spider91 drive 可以挂不同 `crawl_hour`，错峰避免并发下载
+
+### 16.5 GC 和清理
+
+- 当前**不主动清理旧视频文件**。删 spider91 drive 不会删 `data/spider91/<driveID>/` 下的文件（和云盘 drive 删除时不动 teaser 一致）
+- 已存在 viewkey 在 Python 端通过 `--seen-viewkeys-file` 跳过（不发详情页请求），Go 端再做 `Catalog.GetVideo` 二次去重防御
+- 每次爬虫输出的 JSON 留在 `<driveDir>/.crawl/target-<N>-<UTC>.json`，对应的已知 viewkey 列表在 `<driveDir>/.crawl/seen-<UTC>.txt`，方便事后排查；磁盘吃紧可手动清理
+
+### 16.6 测试覆盖
+
+- `internal/drives/spider91/driver_test.go`：8 个用例覆盖 Init/safeJoin/List/Stat/StreamURL/BuildVideoID
+- `internal/drives/spider91/crawler_test.go`：用 shell 脚本伪装成 python + httptest 服务器跑端到端流程，覆盖首次入库、文件落盘、封面副本、SeenSnapshot 计数、第二次跑跳过已存在 viewkey
+- `internal/drives/spider91/ext_test.go`：`detectVideoExt` / `detectThumbExt` 的扩展名识别表驱动测试
+- `internal/catalog/file_ids_test.go`：`ListVideoFileIDsByDrive` 的 drive 隔离 + 空字段过滤
+- `cmd/server/main_spider91_test.go`：`spider91DueAt` 时间窗判断、`spider91IntCred` 凭证解析
+
+### 16.7 已知风险
+
+- 视频直链带过期 token，必须立刻下载；当前下载超时 30 分钟，单条视频典型 100 MB，正常网络 1 分钟内完成
+- 91porn 有 Cloudflare，遇到 403 会让 Python 脚本退出非零，crawler 会写 last_crawl_at + drive.status=error，下次窗口仍会重试
+- **代理是必需的**：91porn CDN 节点都在海外，国内服务器直连会变成几 KB/s 级别的慢速。backend 启动时必须能拿到 `HTTPS_PROXY` 环境变量，或在 drive credentials 里显式设 `proxy`；启动前在 `start.sh` 中导出 `HTTPS_PROXY` 是最方便的做法
+- 单条视频平均 100 MB，每天 15 个新视频约占 1.5 GB；运行一段时间后注意磁盘容量，当前无自动清理

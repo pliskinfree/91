@@ -5,6 +5,7 @@
 - 前端：React 18 + Vite + TypeScript
 - 后端：Go 1.23，SQLite（纯 Go 驱动，无 CGO），ffmpeg 生成 teaser 和封面
 - 网盘接入：夸克自研 + 115driver SDK + PikPak 自研（参考 OpenList）+ wopan-sdk-go SDK + OneDrive（OpenList 在线续期 + Microsoft Graph 文件接口）
+- 爬虫接入：91 爬虫（`91VideoSpider/spider_91porn.py`，每天凌晨拉一页视频 + 封面到本地）
 
 ## 当前功能
 
@@ -84,6 +85,7 @@ Vite dev / preview server 都已配置把 `/api`、`/p`、`/admin/api` 反代到
 ├─ src/                       React 前端
 ├─ backend/                   Go 后端（单体服务）
 │  └─ vendor/                 Go 依赖全量源码，入库，支持完全离线构建
+├─ 91VideoSpider/             91 爬虫脚本（Python，spider91 drive 调用）
 ├─ OpenList-4.2.1/            OpenList 完整源码，网盘协议对接参考
 ├─ tests/                     前端纯逻辑测试
 ├─ start.sh                   本地前后端启动脚本
@@ -126,6 +128,7 @@ git add vendor/      # 入库
 | PikPak | `username`、`password`，可选 `refresh_token`、`captcha_token`、`device_id`、`platform`、`disable_media_link` | 参考 OpenList PikPak driver；首次登录成功会自动回写 token |
 | 沃盘 | `access_token`、`refresh_token`、可选 `family_id` | 第一版只能手动粘贴 token；后续会加扫码/短信登录 |
 | OneDrive | `refresh_token`，可选 `access_token`、`api_url_address`、`region`、`is_sharepoint`、`site_id` | 按 OpenList 默认方式调用 `https://api.oplist.org/onedrive/renewapi` 在线刷新 token；`rootId` / `scanRootId` 默认填 `root`，SharePoint 需填 `is_sharepoint=true` 和 `site_id` |
+| 91 爬虫 | 可选 `target_new`、`crawl_hour`、`proxy`、`python_path`、`script_path` | 详见下文「91 爬虫源」 |
 
 ### 115 说明
 
@@ -147,6 +150,69 @@ PikPak 的 `disable_media_link` 默认按 `true` 处理，会使用 `web_content
 ### OneDrive 说明
 
 OneDrive 当前采用 OpenList 在线 API 的续期方式，不要求用户提供 Azure 应用的 `client_id` / `client_secret` / `redirect_uri`。配置时至少填 `refresh_token`；如使用 OpenList 代刷获得的 token，可把 refresh token 填到本项目。普通 OneDrive 的 `rootId` / `scanRootId` 推荐填 `root`，SharePoint 文档库需额外设置 `is_sharepoint=true` 和 `site_id`。
+
+### 91 爬虫源
+
+91 爬虫不是真正的网盘，而是把 `91VideoSpider/spider_91porn.py` 包装成一种 drive：每天凌晨自动跑一次脚本，从 91porn 本月最热第 1 页起翻页，跳过已经爬过的 viewkey，凑够指定数量的新视频后停止；下载视频和封面到本地，再以 `spider91` 类型的 drive 接入到现有的视频列表 / 详情 / 标签 / teaser 流水线。
+
+**部署前置条件**：
+
+1. 服务器装好 Python 3 + 依赖：
+   ```bash
+   pip install requests beautifulsoup4 lxml
+   ```
+2. 91porn 的 CDN 节点（cdn77.org / btc620.com 等）位于海外，国内服务器直连下载通常只有几 KB/s。**必须经过代理**，可以两种方式之一：
+   - 全局：让 backend 进程能拿到 `HTTPS_PROXY` 环境变量（如 `export HTTPS_PROXY=http://127.0.0.1:7890`），然后 `./start.sh --restart`
+   - 单 drive：在管理后台 spider91 drive 的 `proxy` 字段里填 `http://127.0.0.1:7890`，覆盖环境变量
+
+   实测通过本地 mihomo HTTP 代理，下载速度约 12-15 MB/s，15 个视频（约 1.2 GB）端到端 2-3 分钟跑完。
+
+**配置方式**：在 `/admin/drives` 新建，类型选 "91 爬虫"，所有字段都有合理默认值，可以直接保存：
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| `target_new` | `15` | 每次爬取的新视频数。从 page 1 起翻页，跳过已知 viewkey，凑够这么多个新视频后停止 |
+| `crawl_hour` | `0` | 0-23，整点触发的小时；默认 00:00-00:59 之间触发 |
+| `proxy` | `（空）` | 下载代理 URL，如 `http://127.0.0.1:7890`；留空时回退到 backend 进程的 `HTTPS_PROXY` 环境变量 |
+| `python_path` | `python3` | 解释器路径，可填绝对路径 |
+| `script_path` | （自动定位） | 脚本绝对路径；不填时从仓库结构里推断 `91VideoSpider/spider_91porn.py` |
+
+服务启动时会自动从 `backend/` 父目录推断 `script_path`，所以正常运行 `cd backend && go run ./cmd/server` 时不需要手填。
+
+**管理后台 UI 适配**：`spider91` 行的"状态"列显示 `已就绪`/`错误`（不会出现"未配置凭证"），"扫描根"列改成显示 `上次抓取 N 小时前`，操作里的 `重扫` 按钮变成 `立即抓取`（点击后立刻触发一次完整流程，不受 12 小时间隔约束）。
+
+**目录结构**：
+
+```
+backend/data/spider91/<driveID>/
+├─ videos/<viewkey>.mp4    # 下载下来的视频文件（后缀按直链 URL 推断）
+├─ thumbs/<viewkey>.jpg    # 下载下来的封面（也会复制一份到 backend/data/previews/thumbs/）
+└─ .crawl/                 # 每次爬虫输出的 JSON 和已知 viewkey 列表，带时间戳，便于排查
+```
+
+**触发逻辑**：
+
+- 每分钟轮询一次。命中 `crawl_hour` 小时窗口（默认 0:00-0:59）+ 距离上次成功爬取至少 12 小时 → 触发
+- 管理后台点 "立即抓取" 等同于立刻手动触发一次（不受时间窗约束）
+- 每个 `spider91` drive 独立调度；可以挂多个不同 `crawl_hour` 的实例
+
+**去重**：用 91porn 网站的 `viewkey` 作为唯一标识，配合 `videos.id = "spider91-<driveID>-<viewkey>"` 的拼接规则去重。每次爬取前 backend 会把 catalog 里已存在的 viewkey 列表写到 `.crawl/seen-<时间戳>.txt`，作为 `--seen-viewkeys-file` 传给 Python 脚本；脚本只会请求未见过 viewkey 的详情页。
+
+**视频文件格式**：保存到磁盘时的扩展名按视频直链 URL 真实后缀决定（`.mp4` / `.webm` / `.mkv` / `.mov` / `.m4v` / `.flv` / `.avi`）；对 `.m3u8` 等流媒体清单回退到 `.mp4`。`videos.ext` 字段也会跟实际后缀保持一致。
+
+**封面、标签和 teaser**：
+
+- 封面直接用爬虫拿到的网站原图，不调用 ffmpeg 抽帧；入库时 `thumbnail_status` 直接置为 `ready`，封面 worker 不会处理 spider91 视频
+- 所有 spider91 视频自动打 **`91porn`** 标签（`source=system`）。挂载 spider91 drive 时会自动建标签 + 给已入库的视频按 author 字段补打；新视频入库时直接带上
+- teaser 走现有 ffmpeg 生成流水线（`Teaser 生成` 总开关开启时），mp4 下载完后 3-4 秒内生成
+
+**风险和注意事项**：
+
+- 视频直链带过期 token（`e=` 参数），爬完必须立刻下载，不能延后
+- 91porn 有 Cloudflare 防护，连续访问可能触发 403；脚本内置 3-6 秒列表页延时和 2-5 秒详情页延时
+- `target_new=15` 配合 page 上下文，单次任务大概要请求 15-30 个详情页（部分页面会是已爬过的 viewkey，会跳过详情页请求）；Python 阶段约 1 分钟，下载阶段在代理畅通时约 1.5 分钟
+- 单条视频平均 100 MB，每天 15 个新视频约占 1.5 GB；运行一段时间后注意磁盘容量
+- 当前不会自动清理旧视频；磁盘吃紧时手动删除 `backend/data/spider91/<driveID>/videos/` 下的文件并删除 catalog 中对应的视频（或者删除整个 drive）
 
 ## Teaser 和封面生成策略
 

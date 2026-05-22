@@ -22,6 +22,7 @@ import (
 	"github.com/video-site/backend/internal/auth"
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/drives/localupload"
+	"github.com/video-site/backend/internal/drives/spider91"
 	"github.com/video-site/backend/internal/proxy"
 )
 
@@ -134,6 +135,7 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 		// 代理路由同样需要鉴权，防止绕过
 		r.Get("/p/stream/{driveID}/{fileID}", s.handleStream)
 		r.Get("/p/upload/{videoID}", s.handleUploadedVideo)
+		r.Get("/p/spider91/{videoID}", s.handleSpider91Video)
 		r.Get("/p/preview/{videoID}", s.handlePreview)
 		r.Get("/p/thumb/{videoID}", s.handleThumb)
 	})
@@ -220,7 +222,7 @@ func (s *Server) handleVideoDetail(w http.ResponseWriter, r *http.Request) {
 
 	detail := VideoDetailDTO{
 		VideoDTO:    dto,
-		VideoSrc:    videoSource(v),
+		VideoSrc:    s.videoSource(v),
 		Poster:      thumbnailURL(v),
 		Description: v.Description,
 		EmbedURL:    fmt.Sprintf(`<iframe src="/embed/%s" width="640" height="360" frameborder="0" allowfullscreen></iframe>`, v.ID),
@@ -404,7 +406,7 @@ func (s *Server) handleShortsNext(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, ShortsItemDTO{
 			VideoDTO: dto,
-			VideoSrc: videoSource(v),
+			VideoSrc: s.videoSource(v),
 			Poster:   thumbnailURL(v),
 		})
 	}
@@ -631,6 +633,44 @@ func (s *Server) handleUploadedVideo(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, path)
 }
 
+// handleSpider91Video 服务 spider91 drive 下载到本地的视频文件。
+// 路径形如 /p/spider91/<videoID>，videoID = "spider91-<driveID>-<viewkey>"。
+// 通过 catalog 拿到 file_id（"<viewkey>.mp4"），再让 driver 解析到绝对路径并 ServeFile。
+func (s *Server) handleSpider91Video(w http.ResponseWriter, r *http.Request) {
+	videoID := chi.URLParam(r, "videoID")
+	v, err := s.Catalog.GetVideo(r.Context(), videoID)
+	if err != nil || v.Hidden {
+		http.NotFound(w, r)
+		return
+	}
+	if s.Proxy == nil || s.Proxy.Registry == nil {
+		http.NotFound(w, r)
+		return
+	}
+	d, ok := s.Proxy.Registry.Get(v.DriveID)
+	if !ok || d.Kind() != spider91.Kind {
+		http.NotFound(w, r)
+		return
+	}
+	sd, ok := d.(*spider91.Driver)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	path, err := sd.VideoPath(v.FileID)
+	if err != nil {
+		http.Error(w, "invalid video id", http.StatusForbidden)
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Size() == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	http.ServeFile(w, r, path)
+}
+
 func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	videoID := chi.URLParam(r, "videoID")
 	v, err := s.Catalog.GetVideo(r.Context(), videoID)
@@ -723,6 +763,20 @@ func thumbnailURL(v *catalog.Video) string {
 	return "/p/thumb/" + v.ID
 }
 
+func (s *Server) videoSource(v *catalog.Video) string {
+	if v.DriveID == localUploadDriveID {
+		return "/p/upload/" + v.ID
+	}
+	if s.Proxy != nil && s.Proxy.Registry != nil {
+		if d, ok := s.Proxy.Registry.Get(v.DriveID); ok && d.Kind() == spider91.Kind {
+			return "/p/spider91/" + v.ID
+		}
+	}
+	return fmt.Sprintf("/p/stream/%s/%s", v.DriveID, v.FileID)
+}
+
+// videoSource 兼容旧调用点，没有 server context 时按之前逻辑回退到 /p/stream。
+// 内部新增的代码请使用 (*Server).videoSource。
 func videoSource(v *catalog.Video) string {
 	if v.DriveID == localUploadDriveID {
 		return "/p/upload/" + v.ID
@@ -742,6 +796,8 @@ func driveKindLabel(kind string) string {
 		return "联通沃盘"
 	case "onedrive":
 		return "OneDrive"
+	case spider91.Kind:
+		return "91 爬虫"
 	default:
 		return kind
 	}

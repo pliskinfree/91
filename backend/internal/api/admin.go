@@ -153,6 +153,9 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 		Status                    string           `json:"status"`
 		LastError                 string           `json:"lastError,omitempty"`
 		HasCredential             bool             `json:"hasCredential"`
+		// LastCrawlAt 是 spider91 上次成功爬取的 unix 秒（来自 credentials.last_crawl_at）。
+		// 其它 kind 留 0；前端用它显示"上次抓取: N 小时前"。
+		LastCrawlAt               int64            `json:"lastCrawlAt,omitempty"`
 		ThumbnailGenerationStatus GenerationStatus `json:"thumbnailGenerationStatus"`
 		PreviewGenerationStatus   GenerationStatus `json:"previewGenerationStatus"`
 		ThumbnailReadyCount       int              `json:"thumbnailReadyCount"`
@@ -173,11 +176,33 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 		if generation.Preview.State == "" {
 			generation.Preview.State = "idle"
 		}
+		// spider91 没有用户凭证概念；只要存在 drive 行就视为"已配置"。
+		// last_crawl_at 是后端自动写入的运行状态字段，不计入 hasCredential 判定。
+		hasCred := false
+		userCredKeys := 0
+		for k := range d.Credentials {
+			if k == "last_crawl_at" {
+				continue
+			}
+			userCredKeys++
+		}
+		hasCred = userCredKeys > 0 || d.Kind == "spider91"
+
+		var lastCrawlAt int64
+		if d.Credentials != nil {
+			if raw, ok := d.Credentials["last_crawl_at"]; ok && raw != "" {
+				if v, err := strconv.ParseInt(raw, 10, 64); err == nil {
+					lastCrawlAt = v
+				}
+			}
+		}
+
 		list = append(list, out{
 			ID: d.ID, Kind: d.Kind, Name: d.Name,
 			RootID: d.RootID, ScanRootID: d.ScanRootID,
 			Status: d.Status, LastError: d.LastError,
-			HasCredential:             len(d.Credentials) > 0,
+			HasCredential:             hasCred,
+			LastCrawlAt:               lastCrawlAt,
 			ThumbnailGenerationStatus: generation.Thumbnail,
 			PreviewGenerationStatus:   generation.Preview,
 			ThumbnailReadyCount:       thumbCounts.Ready,
