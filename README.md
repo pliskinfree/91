@@ -225,13 +225,39 @@ git add vendor/      # 入库
 | OneDrive | `refresh_token`，可选 `access_token`、`api_url_address`、`region`、`is_sharepoint`、`site_id` | 按 OpenList 默认方式调用 `https://api.oplist.org/onedrive/renewapi` 在线刷新 token；`rootId` / `scanRootId` 默认填 `root`，SharePoint 需填 `is_sharepoint=true` 和 `site_id` |
 | 91 爬虫 | 可选 `target_new`、`crawl_hour`、`proxy`、`python_path`、`script_path` | 详见下文「91 爬虫源」 |
 
+## 视频播放路径
+
+不同网盘的视频字节走法不同，这影响：用户带宽来源、客户端 IP 暴露、backend 出站流量。
+
+| 网盘 | 用户播放 `/p/stream/<driveID>/<fileID>` | ffmpeg 生成 teaser |
+|---|---|---|
+| **115、PikPak** | **302 重定向直连 CDN**（视频字节不过 backend）| 进程内本地代理转发 Range 请求（加必要请求头） |
+| OneDrive、夸克、沃盘 | backend 反代字节（需要后端 Cookie / Authorization 鉴权）| 同左 |
+| spider91、localupload | backend 直接 ServeFile 本地文件 | 直接读本地 mp4 |
+
+**302 直连** 意味着：
+- 浏览器拿到签名 CDN URL 后自己访问，**视频字节不流经服务器**，省服务器带宽。
+- 用户端到该网盘 CDN 节点的网络质量决定播放速度（国内用户对 PikPak 海外节点尤其敏感）。
+- 客户端 IP 暴露给该网盘 CDN（和 OpenList 行为一致）。
+- 链接有过期时间（115 / PikPak 都是几分钟到 10 分钟），超长暂停后 Range 续传 403 时刷新页面会自动重新取链。
+
+**backend 反代** 意味着：
+- 字节经过 backend 出站，受服务器带宽和 backend 的代理策略影响。
+- 客户端 IP 不暴露给上游网盘。
+- backend 持有的 Cookie / Authorization 才能拉到下载流（这些字段不能交给浏览器）。
+
+**ffmpeg 走本地代理** 是 backend 内部行为：teaser worker 启动一个临时的 `127.0.0.1:<随机端口>` HTTP server，给 ffmpeg 一个本地 URL，本地代理把 Range 请求转发到 CDN 并自动加 UA / Cookie。这样：
+- 签名 URL 不出现在 ffmpeg 命令行里（避免日志泄漏）
+- 多段抽帧时 ffmpeg 总是访问同一个本地 URL，但每个 Range 都会被代理转换成新一次取链请求，避开 CDN 对同一签名 URL 多段并发的风控
+
 ### 115 说明
 
 115 的下载直链对同一个 CDN URL 的多段随机读取比较敏感，尤其是大文件生成多段 teaser 时，容易出现 `403 Forbidden`、WAF 阻断、`moov atom not found` 或 `partial file`。后端对 115 做了专门处理：
 
-- 取流优先使用移动端下载接口，失败再回退到原 chrome 下载接口。
-- 生成 teaser 时不再让 ffmpeg 同时打开多个 115 直链；每个 3 秒片段会单独取链、单独生成本地小片段，最后在本地 concat。
-- ffmpeg 访问 115 CDN 时会经过进程内本地代理转发 Range 请求，避免直接暴露签名 URL，并统一处理必要请求头。
+- **用户播放**：和 PikPak 一样走 302 直连 115 CDN，浏览器自己请求 CDN（不经过 backend）。客户端 IP 暴露给 115 CDN，链接 `e=` 过期时刷新页面即可重新签。
+- **取流优先用移动端下载接口**，失败再回退到原 chrome 下载接口（仅影响 backend 内部取链阶段，比如 ffmpeg 抽 teaser 时）。
+- **生成 teaser** 不再让 ffmpeg 同时打开多个 115 直链；每个 3 秒片段单独取链、单独生成本地小片段，最后在本地 concat。
+- **ffmpeg 访问 115 CDN** 会经过进程内本地代理转发 Range 请求，避免直接暴露签名 URL，并统一处理必要请求头。
 - 如果 115 返回 403 / 405 / WAF 阻断 / `moov atom not found` / `partial file` 等疑似临时风控错误，当前网盘的封面/teaser worker 会进入默认 5 分钟冷却，当前任务保持 `pending`，避免继续请求导致更多失败。
 
 管理后台的"重生失败 teaser"会把 `failed` 重置为 `pending` 并入队。一次性重生大量 115 视频仍可能触发上游风控；建议点一次后观察日志，如果出现 `transient media source error until=...`，等待冷却结束再继续，不要反复点击。
