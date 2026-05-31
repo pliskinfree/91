@@ -110,7 +110,7 @@ export function AdminLayout() {
             {checkingUpdate ? "检查中" : "检查更新"}
           </button>
           <button className="admin-sidebar__logout" onClick={handleLogout}>
-            <LogOut size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
+            <LogOut size={14} />
             退出登录
           </button>
         </div>
