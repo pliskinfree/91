@@ -13,7 +13,7 @@ export function fetchHomeVideos(excludeIds?: string[]): Promise<VideoItem[]> {
 export function fetchListing(
   page: number,
   pageSize: number,
-  params?: { q?: string; tag?: string; cat?: string; sort?: string }
+  params?: { q?: string; tag?: string; cat?: string; sort?: string; includeTotal?: boolean }
 ): Promise<{ items: VideoItem[]; total: number }> {
   const qs = new URLSearchParams({
     page: String(page),
@@ -23,6 +23,7 @@ export function fetchListing(
   if (params?.tag) qs.set("tag", params.tag);
   if (params?.cat) qs.set("cat", params.cat);
   if (params?.sort) qs.set("sort", params.sort);
+  if (params?.includeTotal === false) qs.set("count", "false");
   return apiGet<{ items: VideoItem[]; total: number }>(
     `/api/list?${qs.toString()}`
   ).catch(() => ({ items: [], total: 0 }));
@@ -78,8 +79,28 @@ export function uploadVideo(input: UploadVideoInput): Promise<VideoItem> {
 
 export type TagItem = { id: string; label: string; count?: number };
 
+const TAG_CACHE_TTL_MS = 30_000;
+let cachedTags: TagItem[] | null = null;
+let cachedTagsAt = 0;
+let pendingTags: Promise<TagItem[]> | null = null;
+
 export function fetchTags(): Promise<TagItem[]> {
-  return apiGet<TagItem[]>("/api/tags").catch(() => []);
+  const now = Date.now();
+  if (cachedTags && now - cachedTagsAt < TAG_CACHE_TTL_MS) {
+    return Promise.resolve(cachedTags);
+  }
+  if (pendingTags) return pendingTags;
+  pendingTags = apiGet<TagItem[]>("/api/tags")
+    .then((tags) => {
+      cachedTags = tags;
+      cachedTagsAt = Date.now();
+      return tags;
+    })
+    .catch(() => cachedTags ?? [])
+    .finally(() => {
+      pendingTags = null;
+    });
+  return pendingTags;
 }
 
 /** 短视频模式单条记录。比 VideoItem 多 videoSrc / poster。 */

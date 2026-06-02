@@ -311,6 +311,26 @@ func TestHandleListLatestPrefersReadyThumbnails(t *testing.T) {
 			t.Fatalf("thumbnail for %q = %q, want ready thumbnail URL", item.ID, item.Thumbnail)
 		}
 	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/list?page=1&size=12&sort=latest&count=false", nil)
+	(&Server{Catalog: cat}).handleList(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("count=false status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	got = struct {
+		Items []VideoDTO `json:"items"`
+		Total int        `json:"total"`
+	}{}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode count=false response: %v", err)
+	}
+	if got.Total != 0 {
+		t.Fatalf("count=false total = %d, want 0", got.Total)
+	}
+	if len(got.Items) != 12 {
+		t.Fatalf("count=false items = %d, want 12", len(got.Items))
+	}
 }
 
 func TestHandleUploadVideoSavesFileVideoTagsAndQueuesPreview(t *testing.T) {

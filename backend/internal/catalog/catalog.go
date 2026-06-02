@@ -879,6 +879,7 @@ type ListParams struct {
 	Sort                  string // latest | hot | week | long
 	ThumbnailReadyOnly    bool
 	PreferReadyThumbnails bool
+	SkipTotal             bool
 	Page                  int
 	PageSize              int
 }
@@ -936,10 +937,11 @@ func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, 
 		orderBy = " ORDER BY " + readyOrderPrefix + "duration_seconds DESC"
 	}
 
-	// count
 	var total int
-	if err := c.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM videos"+whereSQL, args...).Scan(&total); err != nil {
-		return nil, 0, err
+	if !p.SkipTotal {
+		if err := c.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM videos"+whereSQL, args...).Scan(&total); err != nil {
+			return nil, 0, err
+		}
 	}
 
 	// list

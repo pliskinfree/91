@@ -60,30 +60,43 @@ function rememberHomeVideos(items: VideoItem[]) {
 export default function HomePage() {
   const [rankingVideos, setRankingVideos] = useState<VideoItem[]>(cachedRanking ?? []);
   const [latestVideos, setLatestVideos] = useState<VideoItem[]>(cachedLatest ?? []);
-  const [loading, setLoading] = useState(cachedRanking === null);
+  const [rankingLoading, setRankingLoading] = useState(cachedRanking === null);
+  const [latestLoading, setLatestLoading] = useState(cachedLatest === null);
   const isMobile = useIsMobile();
 
   useEffect(() => {
     document.title = "首页 · 91";
 
-    // 有缓存说明是 SPA 内导航返回，不重新请求
-    if (cachedRanking !== null) return;
-
     let active = true;
-    setLoading(true);
-    const excludeIds = loadRecentHomeVideoIds();
-    Promise.all([
-      fetchHomeVideos(excludeIds),
-      fetchListing(1, DESKTOP_COUNT, { sort: "latest" }),
-    ]).then(([rankingItems, latestResult]) => {
-      if (!active) return;
-      rememberHomeVideos(rankingItems);
-      cachedRanking = rankingItems;
-      cachedLatest = latestResult.items;
-      setRankingVideos(rankingItems);
-      setLatestVideos(latestResult.items);
-      setLoading(false);
-    });
+
+    if (cachedRanking === null) {
+      setRankingLoading(true);
+      const excludeIds = loadRecentHomeVideoIds();
+      fetchHomeVideos(excludeIds)
+        .then((rankingItems) => {
+          if (!active) return;
+          rememberHomeVideos(rankingItems);
+          cachedRanking = rankingItems;
+          setRankingVideos(rankingItems);
+        })
+        .finally(() => {
+          if (active) setRankingLoading(false);
+        });
+    }
+
+    if (cachedLatest === null) {
+      setLatestLoading(true);
+      fetchListing(1, DESKTOP_COUNT, { sort: "latest", includeTotal: false })
+        .then((latestResult) => {
+          if (!active) return;
+          cachedLatest = latestResult.items;
+          setLatestVideos(latestResult.items);
+        })
+        .finally(() => {
+          if (active) setLatestLoading(false);
+        });
+    }
+
     return () => { active = false; };
   }, []);
 
@@ -101,12 +114,17 @@ export default function HomePage() {
 
       <div className="container page-section">
         <SectionHeader title="随机推荐" extra={`随机展示 ${ranking.length} 个作品`} />
-        <VideoGrid videos={ranking} loading={loading} skeletonCount={displayCount} />
+        <VideoGrid
+          videos={ranking}
+          loading={rankingLoading}
+          priorityCount={Math.min(4, displayCount)}
+          skeletonCount={displayCount}
+        />
       </div>
 
       <div className="container page-section">
         <SectionHeader title="最新视频" extra={latest.length > 0 ? `共 ${latest.length} 个` : undefined} />
-        <VideoGrid videos={latest} loading={loading} skeletonCount={displayCount} />
+        <VideoGrid videos={latest} loading={latestLoading} skeletonCount={displayCount} />
       </div>
     </AppShell>
   );

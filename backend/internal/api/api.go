@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -53,6 +54,10 @@ type Server struct {
 	UploadDir       string
 	OnVideoUploaded func(*catalog.Video)
 
+	tagCacheMu    sync.Mutex
+	tagCacheUntil time.Time
+	tagCache      []TagDTO
+
 	// GetTheme 返回当前生效的主题（"dark" | "pink"）。前台 /api/settings/theme 用，
 	// 不需要登录。无注入时返回 "dark"。
 	GetTheme func() string
@@ -84,6 +89,12 @@ type VideoDTO struct {
 	PublishedAt     string   `json:"publishedAt"`
 	Tags            []string `json:"tags,omitempty"`
 	Category        string   `json:"category,omitempty"`
+}
+
+type TagDTO struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Count int    `json:"count"`
 }
 
 type VideoDetailDTO struct {
@@ -245,12 +256,13 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	sort := q.Get("sort")
 	params := catalog.ListParams{
-		Keyword:  q.Get("q"),
-		Tag:      q.Get("tag"),
-		Category: q.Get("cat"),
-		Sort:     sort,
-		Page:     page,
-		PageSize: size,
+		Keyword:   q.Get("q"),
+		Tag:       q.Get("tag"),
+		Category:  q.Get("cat"),
+		Sort:      sort,
+		Page:      page,
+		PageSize:  size,
+		SkipTotal: strings.EqualFold(q.Get("count"), "false"),
 	}
 	if sort == "" || sort == "latest" {
 		params.PreferReadyThumbnails = true
@@ -451,20 +463,32 @@ func appendRandomRelated(picked []*catalog.Video, pool []*catalog.Video, targetL
 }
 
 func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	s.tagCacheMu.Lock()
+	if s.tagCache != nil && now.Before(s.tagCacheUntil) {
+		out := append([]TagDTO(nil), s.tagCache...)
+		s.tagCacheMu.Unlock()
+		w.Header().Set("Cache-Control", "private, max-age=15")
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	s.tagCacheMu.Unlock()
+
 	stats, err := s.Catalog.ListTags(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	type tag struct {
-		ID    string `json:"id"`
-		Label string `json:"label"`
-		Count int    `json:"count"`
-	}
-	out := make([]tag, 0, len(stats))
+	out := make([]TagDTO, 0, len(stats))
 	for _, stat := range stats {
-		out = append(out, tag{ID: stat.Label, Label: stat.Label, Count: stat.Count})
+		out = append(out, TagDTO{ID: stat.Label, Label: stat.Label, Count: stat.Count})
 	}
+	s.tagCacheMu.Lock()
+	s.tagCache = append([]TagDTO(nil), out...)
+	s.tagCacheUntil = now.Add(30 * time.Second)
+	s.tagCacheMu.Unlock()
+
+	w.Header().Set("Cache-Control", "private, max-age=15")
 	writeJSON(w, http.StatusOK, out)
 }
 
