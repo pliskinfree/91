@@ -9,6 +9,7 @@ import {
   Tags,
   Palette,
   RefreshCw,
+  MoreVertical,
 } from "lucide-react";
 import * as api from "./api";
 import { useAuth } from "./AuthContext";
@@ -19,6 +20,7 @@ export function AdminLayout() {
   const navigate = useNavigate();
   const { show } = useToast();
   const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   async function handleCheckUpdate() {
     if (checkingUpdate) return;
@@ -114,7 +116,31 @@ export function AdminLayout() {
             退出登录
           </button>
         </div>
+        <button
+          className="admin-sidebar__mobile-menu"
+          onClick={() => setMobileMenuOpen((v) => !v)}
+          aria-label="更多操作"
+        >
+          <MoreVertical size={18} />
+        </button>
       </aside>
+      {mobileMenuOpen && (
+        <div className="admin-sidebar__mobile-overlay" onClick={() => setMobileMenuOpen(false)} />
+      )}
+      <div className={`admin-sidebar__mobile-panel${mobileMenuOpen ? " is-open" : ""}`}>
+        <button
+          className="admin-sidebar__check-update"
+          onClick={() => { handleCheckUpdate(); setMobileMenuOpen(false); }}
+          disabled={checkingUpdate}
+        >
+          <RefreshCw size={14} />
+          {checkingUpdate ? "检查中" : "检查更新"}
+        </button>
+        <button className="admin-sidebar__logout" onClick={() => { handleLogout(); setMobileMenuOpen(false); }}>
+          <LogOut size={14} />
+          退出登录
+        </button>
+      </div>
       <main className="admin-main">
         <Outlet />
       </main>

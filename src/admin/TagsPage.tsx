@@ -93,15 +93,10 @@ export function TagsPage() {
     }
     setBulkDeleting(true);
     try {
-      let ok = 0;
-      for (const id of ids) {
-        try {
-          await api.deleteTag(id);
-          ok += 1;
-        } catch {
-          /* 统计失败数，继续删除其余标签 */
-        }
-      }
+      const results = await Promise.allSettled(
+        ids.map((id) => api.deleteTag(id))
+      );
+      const ok = results.filter((r) => r.status === "fulfilled").length;
       const failed = ids.length - ok;
       show(failed ? `已删除 ${ok} 个，${failed} 个失败` : `已删除 ${ok} 个标签`, failed ? "error" : "success");
       setSelected(new Set());
