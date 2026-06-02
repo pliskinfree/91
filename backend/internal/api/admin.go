@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/video-site/backend/internal/auth"
 	"github.com/video-site/backend/internal/catalog"
+	"github.com/video-site/backend/internal/drives/p123"
 )
 
 type AdminServer struct {
@@ -41,6 +43,7 @@ type AdminServer struct {
 	LocalPreviewDir string
 	// Hooks：外层注入实际执行者
 	OnDriveSaved               func(driveID string) error
+	OnDriveDeleteCleanup       func(ctx context.Context, driveID string) (int, error)
 	OnDriveRemoved             func(driveID string)
 	OnScanRequested            func(driveID string)
 	OnRegenPreview             func(videoID string)
@@ -70,6 +73,9 @@ type AdminServer struct {
 	// 用于"设置跳过目录"弹窗按需展开浏览网盘目录树；只返回目录条目，文件忽略。
 	// 调用方应当处理 error 并以 5xx 返回前端。
 	ListDriveDirChildren func(ctx context.Context, driveID, parentID string) ([]DriveDirEntry, error)
+	// 123 云盘扫码登录接口测试注入；生产留空走官方 user.123pan.cn。
+	P123UserAPIBaseURL string
+	P123HTTPClient     *http.Client
 }
 
 // DriveDirEntry 是 dirtree 接口的一条返回项：网盘上的一个目录节点。
@@ -116,6 +122,8 @@ func (a *AdminServer) Register(r chi.Router) {
 			r.Get("/drives", a.handleListDrives)
 			r.Get("/drives/storage", a.handleDriveStorage)
 			r.Post("/drives", a.handleUpsertDrive)
+			r.Post("/drives/p123/qr", a.handleP123QRStart)
+			r.Get("/drives/p123/qr/{uniID}", a.handleP123QRStatus)
 			r.Delete("/drives/{id}", a.handleDeleteDrive)
 			r.Post("/drives/{id}/rescan", a.handleRescan)
 			r.Post("/drives/{id}/teaser-enabled", a.handleSetDriveTeaserEnabled)
@@ -618,6 +626,28 @@ func normalizeSpider91ProxyURL(raw string) (string, error) {
 
 func (a *AdminServer) handleDeleteDrive(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	var body deleteDriveReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if !body.DeleteVideos {
+		http.Error(w, "deleteVideos=true is required when deleting a drive", http.StatusBadRequest)
+		return
+	}
+
+	deletedVideos := 0
+	if a.OnDriveDeleteCleanup == nil {
+		http.Error(w, "drive video cleanup is not available", http.StatusInternalServerError)
+		return
+	}
+	removed, err := a.OnDriveDeleteCleanup(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	deletedVideos = removed
+
 	if err := a.Catalog.DeleteDrive(r.Context(), id); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -625,7 +655,11 @@ func (a *AdminServer) handleDeleteDrive(w http.ResponseWriter, r *http.Request) 
 	if a.OnDriveRemoved != nil {
 		a.OnDriveRemoved(id)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deletedVideos": deletedVideos})
+}
+
+type deleteDriveReq struct {
+	DeleteVideos bool `json:"deleteVideos"`
 }
 
 func (a *AdminServer) handleRescan(w http.ResponseWriter, r *http.Request) {
@@ -634,6 +668,39 @@ func (a *AdminServer) handleRescan(w http.ResponseWriter, r *http.Request) {
 		a.OnScanRequested(id)
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+}
+
+func (a *AdminServer) p123QRClient() *p123.QRClient {
+	return p123.NewQRClient(p123.QRConfig{
+		UserAPIBaseURL: a.P123UserAPIBaseURL,
+		HTTPClient:     a.P123HTTPClient,
+	})
+}
+
+func (a *AdminServer) handleP123QRStart(w http.ResponseWriter, r *http.Request) {
+	session, err := a.p123QRClient().Generate(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, session)
+}
+
+func (a *AdminServer) handleP123QRStatus(w http.ResponseWriter, r *http.Request) {
+	uniID := chi.URLParam(r, "uniID")
+	loginUUID := r.URL.Query().Get("loginUuid")
+	if strings.TrimSpace(uniID) == "" || strings.TrimSpace(loginUUID) == "" {
+		http.Error(w, "uniID and loginUuid are required", http.StatusBadRequest)
+		return
+	}
+	status, err := a.p123QRClient().Poll(r.Context(), loginUUID, uniID)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, status)
 }
 
 // handleRunNightlyJob 触发一次完整的凌晨流水线（不论当前时间，不论今日是否已跑）。

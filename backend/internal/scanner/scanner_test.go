@@ -14,7 +14,7 @@ import (
 	"github.com/video-site/backend/internal/drives"
 )
 
-func TestRunPersistsRemoteThumbnailFromDriveEntry(t *testing.T) {
+func TestRunIgnoresRemoteThumbnailFromDriveEntry(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -50,8 +50,8 @@ func TestRunPersistsRemoteThumbnailFromDriveEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get video: %v", err)
 	}
-	if got.ThumbnailURL != "https://thumbnail.example/clip.jpg" {
-		t.Fatalf("thumbnail = %q, want remote thumbnail", got.ThumbnailURL)
+	if got.ThumbnailURL != "" {
+		t.Fatalf("thumbnail = %q, want empty so local thumbnail worker regenerates it", got.ThumbnailURL)
 	}
 }
 
@@ -90,7 +90,7 @@ func TestRunIgnoresZeroSizeVideoFiles(t *testing.T) {
 	}
 }
 
-func TestRunBackfillsRemoteThumbnailForExistingVideo(t *testing.T) {
+func TestRunDoesNotBackfillRemoteThumbnailForExistingVideo(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -140,8 +140,8 @@ func TestRunBackfillsRemoteThumbnailForExistingVideo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get video: %v", err)
 	}
-	if got.ThumbnailURL != "https://thumbnail.example/backfilled.jpg" {
-		t.Fatalf("thumbnail = %q, want backfilled remote thumbnail", got.ThumbnailURL)
+	if got.ThumbnailURL != "" {
+		t.Fatalf("thumbnail = %q, want empty so local thumbnail worker regenerates it", got.ThumbnailURL)
 	}
 }
 

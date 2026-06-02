@@ -804,7 +804,7 @@ func TestMigrateCollapsesAVCodeTagsIntoAV(t *testing.T) {
 	}
 }
 
-func TestMigrateClearsVolatileOneDriveThumbnailURLs(t *testing.T) {
+func TestMigrateClearsRemoteNonSpiderThumbnailURLs(t *testing.T) {
 	ctx := context.Background()
 	cat, err := Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -826,6 +826,36 @@ func TestMigrateClearsVolatileOneDriveThumbnailURLs(t *testing.T) {
 		UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("seed onedrive: %v", err)
+	}
+	if err := cat.UpsertDrive(ctx, &Drive{
+		ID:        "p123-main",
+		Kind:      "p123",
+		Name:      "123Pan",
+		RootID:    "root",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed p123: %v", err)
+	}
+	if err := cat.UpsertDrive(ctx, &Drive{
+		ID:        "pikpak-main",
+		Kind:      "pikpak",
+		Name:      "PikPak",
+		RootID:    "root",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed pikpak: %v", err)
+	}
+	if err := cat.UpsertDrive(ctx, &Drive{
+		ID:        "spider91-main",
+		Kind:      "spider91",
+		Name:      "91Spider",
+		RootID:    "root",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed spider91: %v", err)
 	}
 
 	videos := []*Video{
@@ -849,6 +879,27 @@ func TestMigrateClearsVolatileOneDriveThumbnailURLs(t *testing.T) {
 			FileID:       "file-3",
 			Title:        "PikPak",
 			ThumbnailURL: "https://sg-thumbnail-drive.mypikpak.net/v0/screenshot-thumbnails/demo",
+		},
+		{
+			ID:           "p123-remote-thumb-video",
+			DriveID:      "p123-main",
+			FileID:       "file-4",
+			Title:        "123Pan remote thumb",
+			ThumbnailURL: "https://download.123pan.com/thumb/file_70_70?w=70&h=70",
+		},
+		{
+			ID:           "p123-local-thumb-video",
+			DriveID:      "p123-main",
+			FileID:       "file-5",
+			Title:        "123Pan local thumb",
+			ThumbnailURL: "/p/thumb/p123-local-thumb-video",
+		},
+		{
+			ID:           "spider91-local-thumb-video",
+			DriveID:      "spider91-main",
+			FileID:       "file-6",
+			Title:        "91Spider local thumb",
+			ThumbnailURL: "/p/thumb/spider91-local-thumb-video",
 		},
 	}
 	for _, v := range videos {
@@ -884,8 +935,39 @@ func TestMigrateClearsVolatileOneDriveThumbnailURLs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get pikpak video: %v", err)
 	}
-	if pikpak.ThumbnailURL == "" {
-		t.Fatal("pikpak thumbnail was cleared")
+	if pikpak.ThumbnailURL != "" {
+		t.Fatalf("pikpak thumbnail = %q, want cleared", pikpak.ThumbnailURL)
+	}
+
+	p123Remote, err := cat.GetVideo(ctx, "p123-remote-thumb-video")
+	if err != nil {
+		t.Fatalf("get p123 remote thumb video: %v", err)
+	}
+	if p123Remote.ThumbnailURL != "" {
+		t.Fatalf("p123 remote thumbnail = %q, want cleared", p123Remote.ThumbnailURL)
+	}
+	var p123Status string
+	if err := cat.db.QueryRowContext(ctx, `SELECT thumbnail_status FROM videos WHERE id = ?`, "p123-remote-thumb-video").Scan(&p123Status); err != nil {
+		t.Fatalf("read p123 thumbnail status: %v", err)
+	}
+	if p123Status != "pending" {
+		t.Fatalf("p123 remote thumbnail_status = %q, want pending", p123Status)
+	}
+
+	p123Local, err := cat.GetVideo(ctx, "p123-local-thumb-video")
+	if err != nil {
+		t.Fatalf("get p123 local thumb video: %v", err)
+	}
+	if p123Local.ThumbnailURL != "/p/thumb/p123-local-thumb-video" {
+		t.Fatalf("p123 local thumbnail = %q, want preserved", p123Local.ThumbnailURL)
+	}
+
+	spider91Local, err := cat.GetVideo(ctx, "spider91-local-thumb-video")
+	if err != nil {
+		t.Fatalf("get spider91 local thumb video: %v", err)
+	}
+	if spider91Local.ThumbnailURL != "/p/thumb/spider91-local-thumb-video" {
+		t.Fatalf("spider91 local thumbnail = %q, want preserved", spider91Local.ThumbnailURL)
 	}
 }
 

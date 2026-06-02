@@ -237,13 +237,33 @@ func appendUniqueStart(starts []float64, start, eachSec float64) []float64 {
 }
 
 // thumbnailOffsets 选封面抽帧的时间点（秒）。独立于 teaser。
-func thumbnailOffsets() []float64 {
-	return []float64{5, 1, 0}
+// 默认取视频中间帧；时长未知时退回早期帧。
+func thumbnailOffsets(duration float64) []float64 {
+	if duration <= 0 {
+		return []float64{5, 1, 0}
+	}
+	mid := duration / 2
+	out := []float64{mid}
+	for _, fallback := range []float64{5, 1, 0} {
+		if !containsOffset(out, fallback) {
+			out = append(out, fallback)
+		}
+	}
+	return out
+}
+
+func containsOffset(offsets []float64, target float64) bool {
+	for _, offset := range offsets {
+		if math.Abs(offset-target) < 0.01 {
+			return true
+		}
+	}
+	return false
 }
 
 // --- 封面 ---
 
-// GenerateThumbnail 抽一张 jpg 封面。默认从第 5 秒抽帧，失败时回退到更早时间点。
+// GenerateThumbnail 抽一张 jpg 封面。默认从视频中间抽帧，失败时回退到更早时间点。
 func (g *Generator) GenerateThumbnail(ctx context.Context, link *drives.StreamLink, videoID string, duration float64) (string, error) {
 	dir := filepath.Join(g.cfg.LocalDir, "thumbs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -252,7 +272,7 @@ func (g *Generator) GenerateThumbnail(ctx context.Context, link *drives.StreamLi
 	dst := filepath.Join(dir, videoID+".jpg")
 
 	var lastErr error
-	offsets := thumbnailOffsets()
+	offsets := thumbnailOffsets(duration)
 	for i, offset := range offsets {
 		if i > 0 {
 			_ = os.Remove(dst)
@@ -1507,6 +1527,29 @@ func driveErrorShouldCooldown(d drives.Drive, err error) bool {
 			strings.Contains(text, "moov atom not found") ||
 			strings.Contains(text, "partial file") ||
 			strings.Contains(text, "service unavailable")
+	case "p123":
+		// 123 云盘直链解析 / ffmpeg 读取阶段可能返回 429、5xx，或 WAF 类
+		// blocked / 访问阻断文本。命中时冷却，避免封面和预览视频生成连续打接口。
+		text := strings.ToLower(err.Error())
+		return strings.Contains(text, "请求太频繁") ||
+			strings.Contains(text, "请求过于频繁") ||
+			strings.Contains(text, "请求频繁") ||
+			strings.Contains(text, "操作频繁") ||
+			strings.Contains(text, "频率限制") ||
+			strings.Contains(text, "请求次数过多") ||
+			strings.Contains(text, "429") ||
+			strings.Contains(text, "http 500") ||
+			strings.Contains(text, "http 502") ||
+			strings.Contains(text, "http 503") ||
+			strings.Contains(text, "http 504") ||
+			strings.Contains(text, "server returned 403") ||
+			strings.Contains(text, "403 forbidden") ||
+			strings.Contains(text, "too many request") ||
+			strings.Contains(text, "too many requests") ||
+			strings.Contains(text, "rate limit") ||
+			strings.Contains(text, "blocked") ||
+			strings.Contains(text, "访问被阻断") ||
+			strings.Contains(text, "service unavailable")
 	}
 	return false
 }
@@ -1553,6 +1596,11 @@ func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) bool {
 		return false
 	}
 	_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ThumbnailStatus: "pending"})
+	if isSpider91OriginVideo(v) {
+		log.Printf("[thumb] skip %s: spider91-origin video must use crawled thumbnail", v.Title)
+		_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ThumbnailStatus: "failed"})
+		return false
+	}
 	link, err := w.streamLink(ctx, v)
 	if err != nil {
 		if w.pauseForRecoverableError(ctx, v, err, "streamURL") {
@@ -1618,7 +1666,7 @@ func (w *ThumbWorker) probeDuration(ctx context.Context, v *catalog.Video, link 
 }
 
 func (w *ThumbWorker) generateThumbnailFromLink(ctx context.Context, v *catalog.Video, link *drives.StreamLink) error {
-	if _, err := w.Gen.GenerateThumbnail(ctx, link, v.ID, 0); err != nil {
+	if _, err := w.Gen.GenerateThumbnail(ctx, link, v.ID, float64(v.DurationSeconds)); err != nil {
 		return err
 	}
 	_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{
@@ -1627,6 +1675,10 @@ func (w *ThumbWorker) generateThumbnailFromLink(ctx context.Context, v *catalog.
 	})
 	log.Printf("[thumb] ready %s", v.Title)
 	return nil
+}
+
+func isSpider91OriginVideo(v *catalog.Video) bool {
+	return v != nil && strings.HasPrefix(v.ID, "spider91-")
 }
 
 func localPreviewLink(v *catalog.Video) (*drives.StreamLink, bool) {

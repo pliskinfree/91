@@ -30,6 +30,7 @@ import (
 	"github.com/video-site/backend/internal/drives/localupload"
 	"github.com/video-site/backend/internal/drives/onedrive"
 	"github.com/video-site/backend/internal/drives/p115"
+	"github.com/video-site/backend/internal/drives/p123"
 	"github.com/video-site/backend/internal/drives/pikpak"
 	"github.com/video-site/backend/internal/drives/quark"
 	"github.com/video-site/backend/internal/drives/spider91"
@@ -81,6 +82,7 @@ func main() {
 		Catalog:          cat,
 		Registry:         app.registry,
 		GetTargetDriveID: func() string { return app.Spider91UploadDriveID() },
+		CommonThumbDir:   app.commonThumbsDir(),
 	})
 
 	// 初始化本地内置盘；外部云盘放到 HTTP 服务启动后异步挂载，避免上游
@@ -90,6 +92,11 @@ func main() {
 
 	app.loadTheme(ctx)
 	app.loadSpider91UploadDriveID(ctx)
+	if removed, err := app.cleanupOrphanDriveVideos(ctx); err != nil {
+		log.Printf("[cleanup] orphan drive videos: %v", err)
+	} else if removed > 0 {
+		log.Printf("[cleanup] removed %d orphan drive videos", removed)
+	}
 	if err := app.attachLocalUpload(ctx); err != nil {
 		log.Printf("[local-upload] attach failed: %v", err)
 	}
@@ -155,6 +162,9 @@ func main() {
 				return err
 			}
 			return app.attachDrive(ctx, d)
+		},
+		OnDriveDeleteCleanup: func(cleanupCtx context.Context, driveID string) (int, error) {
+			return app.cleanupDriveVideosForDelete(cleanupCtx, driveID)
 		},
 		OnDriveRemoved: func(driveID string) {
 			app.detachDrive(driveID)
@@ -611,6 +621,22 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			Cookie: d.Credentials["cookie"],
 			RootID: d.RootID,
 		})
+	case p123.Kind:
+		drv = p123.New(p123.Config{
+			ID:          d.ID,
+			Username:    d.Credentials["username"],
+			Password:    d.Credentials["password"],
+			AccessToken: d.Credentials["access_token"],
+			Platform:    d.Credentials["platform"],
+			RootID:      d.RootID,
+			OnTokenUpdate: func(access string) {
+				if d.Credentials == nil {
+					d.Credentials = make(map[string]string)
+				}
+				d.Credentials["access_token"] = access
+				_ = a.cat.UpsertDrive(ctx, d)
+			},
+		})
 	case "pikpak":
 		drv = pikpak.New(pikpak.Config{
 			ID:               d.ID,
@@ -777,7 +803,7 @@ func fingerprintConfigForDrive(drv drives.Drive) fingerprint.Config {
 		return cfg
 	}
 	switch strings.ToLower(drv.Kind()) {
-	case "p115", "onedrive":
+	case "p115", "p123", "onedrive":
 		cfg.RateLimitCooldown = 10 * time.Minute
 	case "pikpak":
 		cfg.RateLimitCooldown = 5 * time.Minute
@@ -1233,6 +1259,160 @@ func (a *App) cleanupMissingDriveVideos(ctx context.Context, driveID string, liv
 		removed++
 	}
 	return removed, nil
+}
+
+func (a *App) cleanupDriveVideosForDelete(ctx context.Context, driveID string) (int, error) {
+	if a == nil || a.cat == nil {
+		return 0, nil
+	}
+	d, err := a.cat.GetDrive(ctx, driveID)
+	if err != nil {
+		return 0, err
+	}
+
+	// Stop generation/crawl workers before deleting assets so they do not keep
+	// writing files for a drive that is being removed.
+	a.detachDrive(driveID)
+
+	items, err := a.videosForDriveDelete(ctx, d)
+	if err != nil {
+		return 0, err
+	}
+
+	localDir := ""
+	if a.cfg != nil {
+		localDir = a.cfg.Storage.LocalPreviewDir
+	}
+	for _, v := range items {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		if err := removeLocalVideoAssets(localDir, v); err != nil {
+			return 0, fmt.Errorf("remove local assets for %s: %w", v.ID, err)
+		}
+	}
+
+	if strings.EqualFold(d.Kind, spider91.Kind) {
+		if err := a.removeSpider91DriveDir(driveID); err != nil {
+			return 0, err
+		}
+	}
+
+	removed := 0
+	for _, v := range items {
+		if err := ctx.Err(); err != nil {
+			return removed, err
+		}
+		if err := a.cat.DeleteVideo(ctx, v.ID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return removed, fmt.Errorf("delete catalog video %s: %w", v.ID, err)
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+func (a *App) cleanupOrphanDriveVideos(ctx context.Context) (int, error) {
+	if a == nil || a.cat == nil {
+		return 0, nil
+	}
+	items, err := a.cat.ListVideosWithMissingDrive(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if len(items) == 0 {
+		return 0, nil
+	}
+
+	localDir := ""
+	if a.cfg != nil {
+		localDir = a.cfg.Storage.LocalPreviewDir
+	}
+	spider91Dirs := map[string]struct{}{}
+	for _, v := range items {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		if err := removeLocalVideoAssets(localDir, v); err != nil {
+			return 0, fmt.Errorf("remove local assets for orphan %s: %w", v.ID, err)
+		}
+		if strings.HasPrefix(v.ID, "spider91-"+v.DriveID+"-") {
+			spider91Dirs[v.DriveID] = struct{}{}
+		}
+	}
+	for driveID := range spider91Dirs {
+		if err := a.removeSpider91DriveDir(driveID); err != nil {
+			return 0, err
+		}
+	}
+
+	removed := 0
+	for _, v := range items {
+		if err := ctx.Err(); err != nil {
+			return removed, err
+		}
+		if err := a.cat.DeleteVideo(ctx, v.ID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return removed, fmt.Errorf("delete orphan catalog video %s: %w", v.ID, err)
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+func (a *App) videosForDriveDelete(ctx context.Context, d *catalog.Drive) ([]*catalog.Video, error) {
+	if d == nil {
+		return nil, nil
+	}
+	items, err := a.cat.ListVideosByDrive(ctx, d.ID)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]*catalog.Video, len(items))
+	for _, v := range items {
+		byID[v.ID] = v
+	}
+
+	if strings.EqualFold(d.Kind, spider91.Kind) {
+		prefix := "spider91-" + d.ID + "-"
+		originItems, err := a.cat.ListVideosByIDPrefix(ctx, prefix)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range originItems {
+			byID[v.ID] = v
+		}
+	}
+
+	out := make([]*catalog.Video, 0, len(byID))
+	for _, v := range byID {
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func (a *App) removeSpider91DriveDir(driveID string) error {
+	if strings.TrimSpace(driveID) == "" {
+		return errors.New("remove spider91 drive dir: empty drive id")
+	}
+	root := a.spider91RootDir()
+	dir := a.spider91DriveDir(driveID)
+	clean, ok := localPathWithin(root, dir)
+	if !ok {
+		return fmt.Errorf("remove spider91 drive dir: unsafe path %s", dir)
+	}
+	rootClean, ok := localPathWithin(root, root)
+	if !ok || clean == rootClean {
+		return fmt.Errorf("remove spider91 drive dir: refusing to remove root %s", root)
+	}
+	if err := os.RemoveAll(clean); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove spider91 drive dir %s: %w", clean, err)
+	}
+	return nil
 }
 
 func removeLocalVideoAssets(localDir string, v *catalog.Video) error {

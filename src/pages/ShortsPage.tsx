@@ -1353,6 +1353,7 @@ function formatCount(n: number) {
 function getDriveShortName(source: string): string {
   const s = source.toLowerCase();
   if (s.includes("115")) return "115";
+  if (s.includes("123")) return "123";
   if (s.includes("pikpak")) return "PikP";
   if (s.includes("quark") || s.includes("夸克")) return "Quak";
   if (s.includes("onedrive")) return "OneDrive";

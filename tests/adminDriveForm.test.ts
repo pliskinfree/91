@@ -111,10 +111,11 @@ test("drive type selector keeps primary source order", () => {
     drivesPageSource.matchAll(/<option value="([^"]+)">([^<]+)<\/option>/g),
     (match) => ({ value: match[1], label: match[2] })
   );
-  const driveOptions = options.slice(0, 8);
+  const driveOptions = options.slice(0, 9);
 
   assert.deepEqual(driveOptions, [
     { value: "p115", label: "115 网盘" },
+    { value: "p123", label: "123 云盘" },
     { value: "pikpak", label: "PikPak" },
     { value: "onedrive", label: "OneDrive" },
     { value: "googledrive", label: "Google Drive" },

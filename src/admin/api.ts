@@ -77,7 +77,7 @@ export function checkUpdate() {
 
 export type AdminDrive = {
   id: string;
-  kind: "quark" | "p115" | "pikpak" | "wopan" | "onedrive" | "googledrive" | "localstorage" | "spider91";
+  kind: "quark" | "p115" | "p123" | "pikpak" | "wopan" | "onedrive" | "googledrive" | "localstorage" | "spider91";
   name: string;
   rootId: string;
   status: string;
@@ -139,7 +139,7 @@ export function getDriveStorage() {
 
 export type UpsertDriveInput = {
   id: string;
-  kind: "quark" | "p115" | "pikpak" | "wopan" | "onedrive" | "googledrive" | "localstorage" | "spider91";
+  kind: "quark" | "p115" | "p123" | "pikpak" | "wopan" | "onedrive" | "googledrive" | "localstorage" | "spider91";
   name: string;
   rootId: string;
   credentials: Record<string, string>;
@@ -158,9 +158,14 @@ export function upsertDrive(body: UpsertDriveInput) {
   });
 }
 
-export function deleteDrive(id: string) {
-  return request<{ ok: boolean }>(`/drives/${encodeURIComponent(id)}`, {
+export type DeleteDriveInput = {
+  deleteVideos: true;
+};
+
+export function deleteDrive(id: string, body: DeleteDriveInput) {
+  return request<{ ok: boolean; deletedVideos: number }>(`/drives/${encodeURIComponent(id)}`, {
     method: "DELETE",
+    body: JSON.stringify(body),
   });
 }
 
@@ -168,6 +173,33 @@ export function rescan(id: string) {
   return request<{ ok: boolean }>(
     `/drives/${encodeURIComponent(id)}/rescan`,
     { method: "POST" }
+  );
+}
+
+export type P123QRSession = {
+  loginUuid: string;
+  uniID: string;
+  qrCodeUrl: string;
+  qrImageDataUrl: string;
+  expiresAt?: string;
+};
+
+export type P123QRStatus = {
+  loginStatus: number;
+  statusText: string;
+  scanPlatform?: number;
+  platformText?: string;
+  accessToken?: string;
+};
+
+export function startP123QRLogin() {
+  return request<P123QRSession>("/drives/p123/qr", { method: "POST" });
+}
+
+export function getP123QRStatus(uniID: string, loginUuid: string) {
+  const qs = new URLSearchParams({ loginUuid });
+  return request<P123QRStatus>(
+    `/drives/p123/qr/${encodeURIComponent(uniID)}?${qs.toString()}`
   );
 }
 

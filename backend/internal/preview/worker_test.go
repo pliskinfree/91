@@ -39,8 +39,8 @@ func TestThumbWorkerUpdatesThumbnailAndDurationWithoutChangingPreviewStatus(t *t
 	if gen.thumbnailVideoID != video.ID {
 		t.Fatalf("thumbnail video id = %q, want %q", gen.thumbnailVideoID, video.ID)
 	}
-	if gen.thumbnailDuration != 0 {
-		t.Fatalf("thumbnail duration = %.1f, want fixed-offset thumbnail generation", gen.thumbnailDuration)
+	if gen.thumbnailDuration != 42 {
+		t.Fatalf("thumbnail duration = %.1f, want probed duration", gen.thumbnailDuration)
 	}
 	if gen.probeCalls != 1 {
 		t.Fatalf("probe calls = %d, want 1 for thumbnail generation", gen.probeCalls)
@@ -86,6 +86,35 @@ func TestThumbWorkerBackfillsDurationWhenThumbnailAlreadyExists(t *testing.T) {
 	}
 	if gen.thumbnailVideoID != "" {
 		t.Fatalf("thumbnail generation video id = %q, want no regeneration", gen.thumbnailVideoID)
+	}
+}
+
+func TestThumbWorkerDoesNotGenerateThumbnailForSpider91OriginVideo(t *testing.T) {
+	ctx := context.Background()
+	cat, video := seedPreviewTestVideo(t, "spider91-91-spider-1200001")
+
+	gen := &fakeThumbGenerator{probeDuration: 42}
+	drv := &previewFakeDrive{kind: "pikpak"}
+	worker := NewThumbWorker(gen, cat, drv)
+
+	worker.process(ctx, video)
+
+	got, err := cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		t.Fatalf("get video: %v", err)
+	}
+	if got.ThumbnailURL != "" {
+		t.Fatalf("thumbnail = %q, want empty when crawled spider91 thumbnail is missing", got.ThumbnailURL)
+	}
+	failed, err := cat.ListVideosByThumbnailStatus(ctx, video.DriveID, "failed", 0)
+	if err != nil {
+		t.Fatalf("list failed thumbnails: %v", err)
+	}
+	if len(failed) != 1 || failed[0].ID != video.ID {
+		t.Fatalf("failed thumbnails = %#v, want only %s", failed, video.ID)
+	}
+	if gen.probeCalls != 0 || gen.generateCalls != 0 {
+		t.Fatalf("generator calls probe=%d generate=%d, want no ffmpeg work for spider91-origin thumbnail", gen.probeCalls, gen.generateCalls)
 	}
 }
 
@@ -584,6 +613,22 @@ func TestPreviewWorkerP115TransientErrorKeepsVideoPending(t *testing.T) {
 	}
 	if gen.generateCalls != 1 {
 		t.Fatalf("generate calls = %d, want 1", gen.generateCalls)
+	}
+}
+
+func TestP123TransientErrorsShouldCooldown(t *testing.T) {
+	drv := &previewFakeDrive{kind: "p123"}
+	for _, err := range []error{
+		errors.New("Server returned 403 Forbidden"),
+		errors.New("请求太频繁"),
+		errors.New("http 503 service unavailable"),
+	} {
+		if !driveErrorShouldCooldown(drv, err) {
+			t.Fatalf("driveErrorShouldCooldown(%v) = false, want true", err)
+		}
+	}
+	if driveErrorShouldCooldown(drv, errors.New("invalid credential")) {
+		t.Fatal("invalid credential should not trigger p123 cooldown")
 	}
 }
 

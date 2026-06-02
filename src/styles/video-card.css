@@ -282,6 +282,14 @@
   --drive-shadow: rgba(245, 107, 118, 0.15);
   --drive-shadow-strong: rgba(245, 107, 118, 0.4);
 }
+.source-badge[data-kind="p123"] {
+  --drive-color: var(--drive-p123);
+  --drive-bg: rgba(34, 184, 200, 0.12);
+  --drive-text: #98edf5;
+  --drive-border: rgba(34, 184, 200, 0.35);
+  --drive-shadow: rgba(34, 184, 200, 0.15);
+  --drive-shadow-strong: rgba(34, 184, 200, 0.4);
+}
 .source-badge[data-kind="pikpak"] {
   --drive-color: var(--drive-pikpak);
   --drive-bg: rgba(138, 109, 255, 0.12);
@@ -446,6 +454,7 @@
 
 .video-card__source[data-kind="quark"] { --source-color: var(--drive-quark); }
 .video-card__source[data-kind="p115"] { --source-color: var(--drive-p115); }
+.video-card__source[data-kind="p123"] { --source-color: var(--drive-p123); }
 .video-card__source[data-kind="pikpak"] { --source-color: var(--drive-pikpak); }
 .video-card__source[data-kind="wopan"] { --source-color: var(--drive-wopan); }
 .video-card__source[data-kind="onedrive"] { --source-color: var(--drive-onedrive); }

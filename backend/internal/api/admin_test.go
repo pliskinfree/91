@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -544,6 +545,116 @@ func TestHandleUpsertSpider91RejectsUnsupportedProxyScheme(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "socks5:// 或 socks5h://") {
 		t.Fatalf("body = %q, want supported schemes message", rr.Body.String())
+	}
+}
+
+func TestHandleDeleteDriveRunsRequestedCleanupBeforeDeletingDrive(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+	if err := cat.UpsertDrive(ctx, &catalog.Drive{
+		ID:            "drive-one",
+		Kind:          "pikpak",
+		Name:          "Drive One",
+		RootID:        "root",
+		TeaserEnabled: true,
+	}); err != nil {
+		t.Fatalf("seed drive: %v", err)
+	}
+
+	cleanupCalled := ""
+	removedCalled := ""
+	req := httptest.NewRequest(http.MethodDelete, "/admin/api/drives/drive-one", strings.NewReader(`{"deleteVideos":true}`))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "drive-one")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	(&AdminServer{
+		Catalog: cat,
+		OnDriveDeleteCleanup: func(cleanupCtx context.Context, driveID string) (int, error) {
+			cleanupCalled = driveID
+			if _, err := cat.GetDrive(cleanupCtx, driveID); err != nil {
+				t.Fatalf("drive should still exist during cleanup: %v", err)
+			}
+			return 3, nil
+		},
+		OnDriveRemoved: func(driveID string) {
+			removedCalled = driveID
+		},
+	}).handleDeleteDrive(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if cleanupCalled != "drive-one" {
+		t.Fatalf("cleanup called with %q, want drive-one", cleanupCalled)
+	}
+	if removedCalled != "drive-one" {
+		t.Fatalf("removed hook called with %q, want drive-one", removedCalled)
+	}
+	if _, err := cat.GetDrive(ctx, "drive-one"); err != sql.ErrNoRows {
+		t.Fatalf("drive lookup error = %v, want sql.ErrNoRows", err)
+	}
+	var got struct {
+		OK            bool `json:"ok"`
+		DeletedVideos int  `json:"deletedVideos"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.OK || got.DeletedVideos != 3 {
+		t.Fatalf("response = %#v, want ok with deletedVideos=3", got)
+	}
+}
+
+func TestHandleDeleteDriveRequiresCleanupConfirmation(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+	if err := cat.UpsertDrive(ctx, &catalog.Drive{
+		ID:            "drive-one",
+		Kind:          "pikpak",
+		Name:          "Drive One",
+		RootID:        "root",
+		TeaserEnabled: true,
+	}); err != nil {
+		t.Fatalf("seed drive: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/api/drives/drive-one", strings.NewReader(`{"deleteVideos":false}`))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "drive-one")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	(&AdminServer{
+		Catalog: cat,
+		OnDriveDeleteCleanup: func(context.Context, string) (int, error) {
+			t.Fatal("cleanup hook should not be called without confirmation")
+			return 0, nil
+		},
+	}).handleDeleteDrive(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	if _, err := cat.GetDrive(ctx, "drive-one"); err != nil {
+		t.Fatalf("drive should remain after rejected delete: %v", err)
 	}
 }
 

@@ -622,6 +622,56 @@ func (c *Catalog) ListVideosByDrive(ctx context.Context, driveID string) ([]*Vid
 	return out, rows.Err()
 }
 
+func (c *Catalog) ListVideosByIDPrefix(ctx context.Context, prefix string) ([]*Video, error) {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return nil, fmt.Errorf("catalog: list videos by id prefix: empty prefix")
+	}
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT `+allVideoCols+` FROM videos
+		 WHERE SUBSTR(id, 1, LENGTH(?)) = ?
+		 ORDER BY created_at ASC, id ASC`,
+		prefix, prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Video
+	for rows.Next() {
+		v, err := scanVideo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (c *Catalog) ListVideosWithMissingDrive(ctx context.Context) ([]*Video, error) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT `+allVideoCols+` FROM videos
+		 WHERE drive_id != 'local-upload'
+		   AND NOT EXISTS (
+		       SELECT 1
+		         FROM drives
+		        WHERE drives.id = videos.drive_id
+		   )
+		 ORDER BY drive_id ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Video
+	for rows.Next() {
+		v, err := scanVideo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // ListVideoFileIDsByDrive 只返回某 drive 下所有视频的 file_id 集合，
 // 比 ListVideosByDrive 轻量。
 func (c *Catalog) ListVideoFileIDsByDrive(ctx context.Context, driveID string) ([]string, error) {
@@ -864,6 +914,7 @@ func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, 
 		where = append(where, "COALESCE(thumbnail_url, '') != ''")
 	}
 	where = append(where, "COALESCE(hidden, 0) = 0")
+	where = append(where, activeDriveWhereSQL)
 	where = append(where, uniqueVideoWhereSQL)
 
 	whereSQL := ""
@@ -919,6 +970,7 @@ func (c *Catalog) CountVisibleVideos(ctx context.Context) (int, error) {
 	err := c.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM videos
 		  WHERE COALESCE(hidden, 0) = 0
+		    AND `+activeDriveWhereSQL+`
 		    AND `+uniqueVideoWhereSQL,
 	).Scan(&total)
 	if err != nil {
@@ -947,6 +999,7 @@ func (c *Catalog) randomVideosExcluding(ctx context.Context, excludeIDs []string
 	cleaned := cleanVideoIDs(excludeIDs)
 	args := make([]any, 0, len(cleaned)+1)
 	whereSQL := `WHERE COALESCE(hidden, 0) = 0
+		           AND ` + activeDriveWhereSQL + `
 		           AND ` + uniqueVideoWhereSQL
 	if thumbnailReadyOnly {
 		whereSQL += " AND COALESCE(thumbnail_url, '') != ''"
@@ -1030,6 +1083,7 @@ func (c *Catalog) LeastPopulatedVisibleUniqueTag(ctx context.Context, labels []s
 			`SELECT COUNT(*)
 			   FROM videos
 			  WHERE COALESCE(hidden, 0) = 0
+			    AND `+activeDriveWhereSQL+`
 			    AND `+uniqueVideoWhereSQL+`
 			    AND EXISTS (
 			      SELECT 1
@@ -1066,6 +1120,7 @@ func (c *Catalog) RandomVideosByTagExcluding(ctx context.Context, tag string, ex
 	args := make([]any, 0, len(cleaned)+2)
 	args = append(args, tag)
 	whereSQL := `WHERE COALESCE(hidden, 0) = 0
+		           AND ` + activeDriveWhereSQL + `
 		           AND ` + uniqueVideoWhereSQL + `
 		           AND EXISTS (
 		             SELECT 1
@@ -1712,6 +1767,17 @@ views, favorites, comments, likes, dislikes,
 COALESCE(category, ''), COALESCE(hidden, 0), COALESCE(badges, '[]'), COALESCE(description, ''),
 published_at, created_at, updated_at
 `
+
+const activeDriveWhereSQL = `(videos.drive_id = 'local-upload'
+	OR EXISTS (
+		SELECT 1
+		  FROM drives
+		 WHERE drives.id = videos.drive_id
+	)
+	OR NOT EXISTS (
+		SELECT 1
+		  FROM drives
+	))`
 
 const uniqueVideoWhereSQL = `((COALESCE(videos.content_hash, '') = ''
 		OR NOT EXISTS (

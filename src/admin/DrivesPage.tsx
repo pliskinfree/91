@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   ArrowLeft,
   ChevronDown,
   ChevronRight,
@@ -10,6 +11,7 @@ import {
   Plus,
   Power,
   PowerOff,
+  QrCode,
   RefreshCw,
   RotateCcw,
   Trash2,
@@ -23,6 +25,7 @@ import { makeUniqueDriveId } from "./driveId";
 const kindLabel: Record<string, string> = {
   quark: "夸克网盘",
   p115: "115 网盘",
+  p123: "123 云盘",
   pikpak: "PikPak",
   wopan: "联通沃盘",
   onedrive: "OneDrive",
@@ -90,8 +93,10 @@ export function DrivesPage() {
     useState<api.NightlyJobStatus>(idleNightlyStatus);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<api.AdminDrive | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState("");
   const [regenFailedId, setRegenFailedId] = useState("");
   // 失败重试按钮各自维护 pending 状态，避免操作 teaser / 封面 / 指纹时互相锁住。
   const [regenFailedThumbId, setRegenFailedThumbId] = useState("");
@@ -235,14 +240,22 @@ export function DrivesPage() {
     }
   }
 
-  async function handleDelete(d: api.AdminDrive) {
-    if (!window.confirm(`确定删除 ${d.name || d.id}？\n这会移除盘配置，但不会删除其中的视频元数据。`)) return;
+  async function confirmDeleteDrive() {
+    if (!deleteTarget) return;
+    const d = deleteTarget;
+    setDeletingId(d.id);
     try {
-      await api.deleteDrive(d.id);
-      show("已删除", "success");
+      const resp = await api.deleteDrive(d.id, { deleteVideos: true });
+      show(`已删除，并清理 ${resp.deletedVideos ?? 0} 个视频`, "success");
+      setDeleteTarget(null);
+      if (selectedDriveId === d.id) {
+        setSelectedDriveId(null);
+      }
       refresh();
     } catch (e) {
       show(e instanceof Error ? e.message : "删除失败", "error");
+    } finally {
+      setDeletingId("");
     }
   }
 
@@ -366,6 +379,19 @@ export function DrivesPage() {
     return selectedDriveId ? list.find((d) => d.id === selectedDriveId) : null;
   }, [selectedDriveId, list]);
 
+  const deleteModal = (
+    <DeleteDriveModal
+      drive={deleteTarget}
+      deleting={deletingId === deleteTarget?.id}
+      onCancel={() => {
+        if (!deletingId) {
+          setDeleteTarget(null);
+        }
+      }}
+      onConfirm={confirmDeleteDrive}
+    />
+  );
+
   if (selectedDriveId && selectedDrive) {
     const d = selectedDrive;
     const driveStorage = storage?.drives[d.id];
@@ -451,10 +477,7 @@ export function DrivesPage() {
                 <button className="admin-btn" onClick={() => openEdit(d)}>
                   {d.kind === "spider91" ? "编辑配置" : "编辑配置凭证"}
                 </button>
-                <button className="admin-btn is-danger" onClick={() => {
-                  handleDelete(d);
-                  setSelectedDriveId(null);
-                }} style={{ marginLeft: "auto" }}>
+                <button className="admin-btn is-danger" onClick={() => setDeleteTarget(d)} style={{ marginLeft: "auto" }}>
                   <Trash2 size={13} /> 删除网盘
                 </button>
               </div>
@@ -636,6 +659,7 @@ export function DrivesPage() {
             uploadTargets={uploadTargets}
           />
         </Modal>
+        {deleteModal}
       </section>
     );
   }
@@ -753,6 +777,7 @@ export function DrivesPage() {
           uploadTargets={uploadTargets}
         />
       </Modal>
+      {deleteModal}
     </section>
   );
 }
@@ -920,6 +945,75 @@ function StatusTag({
   return <span className="admin-status">{status || "未连接"}</span>;
 }
 
+function DeleteDriveModal({
+  drive,
+  deleting,
+  onCancel,
+  onConfirm,
+}: {
+  drive: api.AdminDrive | null;
+  deleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const name = drive?.name || drive?.id || "";
+  const isSpider91 = drive?.kind === "spider91";
+  const isLocalStorage = drive?.kind === "localstorage";
+  const title = isSpider91 ? "删除 91Spider" : "删除存储";
+  const primaryText = deleting ? "删除中..." : "确认删除并清理";
+
+  return (
+    <Modal
+      open={!!drive}
+      title={title}
+      onClose={onCancel}
+      footer={
+        <>
+          <button className="admin-btn" onClick={onCancel} disabled={deleting}>
+            取消
+          </button>
+          <button className="admin-btn is-danger" onClick={onConfirm} disabled={deleting}>
+            <Trash2 size={13} />
+            {primaryText}
+          </button>
+        </>
+      }
+    >
+      <div className="admin-delete-confirm">
+        <div className="admin-delete-confirm__icon">
+          <AlertTriangle size={20} />
+        </div>
+        <div className="admin-delete-confirm__content">
+          <p className="admin-delete-confirm__title">
+            {isSpider91
+              ? `确定删除「${name}」吗？`
+              : `确定删除「${name}」并清理该存储的视频数据吗？`}
+          </p>
+          <p className="admin-delete-confirm__text">
+            取消或关闭此弹窗不会删除存储配置，也不会清理任何文件。
+          </p>
+          <ul className="admin-delete-confirm__list">
+            <li>删除该存储配置</li>
+            <li>删除数据库中的相关视频记录，网站首页、列表、标签页和详情页不再展示这些视频</li>
+            <li>删除本机保存的封面图和预览视频</li>
+            {isSpider91 && (
+              <li>删除通过 91Spider 爬取到的本机 91 视频文件</li>
+            )}
+            {isLocalStorage && (
+              <li>不会删除用户配置的本地目录中的原始视频文件</li>
+            )}
+          </ul>
+          {!isSpider91 && !isLocalStorage && (
+            <p className="admin-delete-confirm__text">
+              此操作只清理本项目生成和记录的数据，不会删除云盘上的原始视频文件。
+            </p>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function DriveForm({
   form,
   onChange,
@@ -967,6 +1061,7 @@ function DriveForm({
           disabled={isEdit}
         >
           <option value="p115">115 网盘</option>
+          <option value="p123">123 云盘</option>
           <option value="pikpak">PikPak</option>
           <option value="onedrive">OneDrive</option>
           <option value="googledrive">Google Drive</option>
@@ -998,6 +1093,12 @@ function DriveForm({
             <div className="admin-form__help admin-form__help--lead">
               {help}
             </div>
+          )}
+
+          {form.kind === "p123" && (
+            <P123QRCodeLogin
+              onToken={(token) => setCred("access_token", token)}
+            />
           )}
 
           {fields.map((f) => (
@@ -1034,6 +1135,144 @@ function DriveForm({
       )}
     </div>
   );
+}
+
+function P123QRCodeLogin({ onToken }: { onToken: (token: string) => void }) {
+  const { show } = useToast();
+  const [session, setSession] = useState<api.P123QRSession | null>(null);
+  const [status, setStatus] = useState<api.P123QRStatus | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [pollingError, setPollingError] = useState("");
+  const [completed, setCompleted] = useState(false);
+
+  async function start() {
+    setStarting(true);
+    setPollingError("");
+    setCompleted(false);
+    setStatus(null);
+    try {
+      const next = await api.startP123QRLogin();
+      setSession(next);
+    } catch (e) {
+      setSession(null);
+      show(e instanceof Error ? e.message : "生成二维码失败", "error");
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!session || completed) return;
+    const activeSession = session;
+    let stopped = false;
+    let inFlight = false;
+    let timer: number | undefined;
+
+    async function poll() {
+      if (stopped || inFlight) return;
+      inFlight = true;
+      try {
+        const next = await api.getP123QRStatus(activeSession.uniID, activeSession.loginUuid);
+        if (stopped) return;
+        setStatus(next);
+        setPollingError("");
+        if (next.accessToken) {
+          stopped = true;
+          if (timer) window.clearInterval(timer);
+          setCompleted(true);
+          onToken(next.accessToken);
+          show("扫码成功，已填入 access_token，保存后生效", "success");
+          return;
+        }
+        if (next.loginStatus === 2 || next.loginStatus === 4) {
+          stopped = true;
+          if (timer) window.clearInterval(timer);
+        }
+      } catch (e) {
+        if (stopped) return;
+        setPollingError(e instanceof Error ? e.message : "查询扫码状态失败");
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    poll();
+    timer = window.setInterval(poll, 1800);
+    return () => {
+      stopped = true;
+      if (timer) window.clearInterval(timer);
+    };
+  }, [session, completed, onToken, show]);
+
+  const statusText = completed
+    ? "已获取 token"
+    : pollingError || status?.statusText || (session ? "等待扫码" : "未生成二维码");
+  const statusClass = p123QRStatusClass(status, completed, pollingError);
+  const platform = status?.platformText ? ` · ${status.platformText}` : "";
+
+  return (
+    <div className="admin-form__row">
+      <label>扫码登录</label>
+      <div className="admin-p123-qr">
+        <div className="admin-p123-qr__actions">
+          <button
+            type="button"
+            className="admin-btn"
+            onClick={start}
+            disabled={starting}
+          >
+            <QrCode size={14} />
+            {starting ? "生成中..." : session ? "重新生成二维码" : "生成二维码"}
+          </button>
+          <span className={`admin-status ${statusClass}`}>
+            {statusText}
+            {platform}
+          </span>
+        </div>
+
+        {session && (
+          <div className="admin-p123-qr__body">
+            <img
+              className="admin-p123-qr__image"
+              src={session.qrImageDataUrl}
+              alt="123 云盘扫码登录二维码"
+            />
+            <div className="admin-p123-qr__meta">
+              <div className="admin-form__help">
+                使用微信或 123 云盘 App 扫码并确认登录；确认后系统会自动填入 access_token。
+              </div>
+              {session.expiresAt && (
+                <div className="admin-form__help">
+                  过期时间：{new Date(session.expiresAt).toLocaleTimeString("zh-CN", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                  })}
+                </div>
+              )}
+              {(status?.loginStatus === 2 || status?.loginStatus === 4) && (
+                <div className="admin-form__help">
+                  当前二维码{status.loginStatus === 2 ? "已被拒绝" : "已过期"}，请重新生成。
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function p123QRStatusClass(
+  status: api.P123QRStatus | null,
+  completed: boolean,
+  error: string
+): string {
+  if (completed || status?.loginStatus === 3) return "is-ok";
+  if (error || status?.loginStatus === 2 || status?.loginStatus === 4) {
+    return "is-error";
+  }
+  return "is-pending";
 }
 
 /**
@@ -1080,6 +1319,8 @@ function credentialHelp(kind: Kind, isEdit: boolean): string {
       return `在 pan.quark.cn 登录后，F12 → Network → 任意请求 → Request Headers 里复制整段 Cookie 粘贴到下方。${note}`;
     case "p115":
       return `登录 115.com 后复制 Cookie，形如 "UID=...; CID=...; SEID=...; KID=..."。${note}`;
+    case "p123":
+      return `推荐使用扫码登录自动获取 access_token；账号密码登录被 123 云盘风控拦截时，也可以只填写 access_token。播放走 302 跳转到 123 云盘返回的短期 CDN 地址。${note}`;
     case "pikpak":
       return `填写 PikPak 账号和密码即可。平台、设备 ID、验证码 token 和 refresh token 会由服务端自动处理并保存。${note}`;
     case "wopan":
@@ -1124,6 +1365,26 @@ function credentialFields(kind: Kind): Array<{
           placeholder: "UID=xxx; CID=xxx; SEID=xxx; KID=xxx",
           multiline: true,
           required: true,
+        },
+      ];
+    case "p123":
+      return [
+        {
+          key: "username",
+          label: "用户名 / 邮箱（可选）",
+          placeholder: "user@example.com",
+        },
+        {
+          key: "password",
+          label: "密码（可选）",
+          placeholder: "123 云盘密码",
+        },
+        {
+          key: "access_token",
+          label: "access_token（推荐用于风控场景）",
+          placeholder: "Bearer eyJ... 或直接粘贴 token",
+          multiline: true,
+          help: "扫码成功后会自动填入该字段；如果 token 过期，重新扫码后保存即可。",
         },
       ];
     case "pikpak":
@@ -1349,7 +1610,7 @@ function SelectedDirsChips({
         className="admin-text-faint"
         style={{ fontSize: "13px", padding: "6px 0" }}
       >
-        当前未勾选任何跳过目录（{drive.kind === "p115" ? "115 网盘" : drive.kind}{" "}
+        当前未勾选任何跳过目录（{kindLabel[drive.kind] ?? drive.kind}{" "}
         将完整扫描）。
       </div>
     );

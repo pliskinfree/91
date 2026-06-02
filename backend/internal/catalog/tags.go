@@ -127,6 +127,12 @@ func (c *Catalog) migrate(ctx context.Context) error {
 	if err := c.clearVolatileOneDriveThumbnails(ctx); err != nil {
 		return err
 	}
+	if err := c.clearRemoteP123ThumbnailsOnce(ctx); err != nil {
+		return err
+	}
+	if err := c.clearRemoteNonSpider91Thumbnails(ctx); err != nil {
+		return err
+	}
 	if err := c.hideZeroSizeVideosFromKnownDrives(ctx); err != nil {
 		return err
 	}
@@ -255,6 +261,85 @@ UPDATE videos
  WHERE lower(COALESCE(thumbnail_url, '')) LIKE 'https://%mediap.svc.ms/transform/thumbnail%'
 `, time.Now().UnixMilli())
 	return err
+}
+
+func (c *Catalog) clearRemoteP123ThumbnailsOnce(ctx context.Context) error {
+	// 123 云盘列表返回的缩略图尺寸和稳定性都不适合作为站内封面；清空历史写入的
+	// 远程 URL，让封面 worker 统一从视频直链抽帧生成本地 /p/thumb/<id>。
+	const markerKey = "videos.p123.remote_thumbnails_cleared"
+	marker, err := c.GetSetting(ctx, markerKey, "")
+	if err != nil {
+		return fmt.Errorf("read %s marker: %w", markerKey, err)
+	}
+	if strings.TrimSpace(marker) == "1" {
+		return nil
+	}
+
+	var p123Drives int
+	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM drives WHERE kind = 'p123'`).Scan(&p123Drives); err != nil {
+		return fmt.Errorf("count p123 drives: %w", err)
+	}
+	if p123Drives == 0 {
+		return nil
+	}
+
+	res, err := c.db.ExecContext(ctx, `
+	UPDATE videos
+	   SET thumbnail_url = '',
+	       thumbnail_status = 'pending',
+	       thumbnail_failures = 0,
+	       updated_at = ?
+	 WHERE EXISTS (
+	       SELECT 1
+	         FROM drives
+	        WHERE drives.id = videos.drive_id
+	          AND drives.kind = 'p123'
+	   )
+	   AND (
+	       lower(COALESCE(thumbnail_url, '')) LIKE 'http://%'
+	       OR lower(COALESCE(thumbnail_url, '')) LIKE 'https://%'
+	   )
+	`, time.Now().UnixMilli())
+	if err != nil {
+		return err
+	}
+	if affected, err := res.RowsAffected(); err == nil && affected > 0 {
+		log.Printf("[catalog] cleared %d remote 123pan thumbnail(s) for local regeneration", affected)
+	}
+	if err := c.SetSetting(ctx, markerKey, "1"); err != nil {
+		return fmt.Errorf("write %s marker: %w", markerKey, err)
+	}
+	return nil
+}
+
+func (c *Catalog) clearRemoteNonSpider91Thumbnails(ctx context.Context) error {
+	// 非 91Spider 视频不再使用网盘侧返回的远程缩略图。清空历史 http/https
+	// thumbnail_url 后，封面 worker 会重新从视频中间帧生成本地 /p/thumb/<id>。
+	// 91Spider 的封面是爬虫下载后保存到本地 /p/thumb/<id>，不受这条规则影响。
+	res, err := c.db.ExecContext(ctx, `
+UPDATE videos
+   SET thumbnail_url = '',
+       thumbnail_status = 'pending',
+       thumbnail_failures = 0,
+       updated_at = ?
+ WHERE (
+       lower(COALESCE(thumbnail_url, '')) LIKE 'http://%'
+       OR lower(COALESCE(thumbnail_url, '')) LIKE 'https://%'
+   )
+   AND NOT EXISTS (
+       SELECT 1
+         FROM drives
+        WHERE drives.id = videos.drive_id
+          AND drives.kind = 'spider91'
+   )
+`, time.Now().UnixMilli())
+	if err != nil {
+		return err
+	}
+	if affected, err := res.RowsAffected(); err == nil && affected > 0 {
+		log.Printf("[catalog] cleared %d remote non-91Spider thumbnail(s) for local regeneration", affected)
+	}
+	return nil
 }
 
 func (c *Catalog) hideZeroSizeVideosFromKnownDrives(ctx context.Context) error {

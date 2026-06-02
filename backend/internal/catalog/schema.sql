@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS deleted_tags (
 -- 网盘账户
 CREATE TABLE IF NOT EXISTS drives (
     id            TEXT PRIMARY KEY,
-    kind          TEXT NOT NULL,                -- quark / p115 / pikpak / wopan / onedrive / googledrive / localstorage / spider91
+    kind          TEXT NOT NULL,                -- quark / p115 / p123 / pikpak / wopan / onedrive / googledrive / localstorage / spider91
     name          TEXT NOT NULL,
     root_id       TEXT NOT NULL DEFAULT '0',
     scan_root_id  TEXT,                          -- deprecated: 扫描起点固定等于 root_id

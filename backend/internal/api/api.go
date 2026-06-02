@@ -279,6 +279,15 @@ func (s *Server) handleVideoDetail(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, sql.ErrNoRows)
 		return
 	}
+	if v.DriveID != localUploadDriveID {
+		if _, err := s.Catalog.GetDrive(r.Context(), v.DriveID); err != nil {
+			drives, listErr := s.Catalog.ListDrives(r.Context())
+			if listErr != nil || len(drives) > 0 {
+				writeErr(w, http.StatusNotFound, sql.ErrNoRows)
+				return
+			}
+		}
+	}
 	related := s.pickRelatedVideos(r.Context(), v, 6)
 	dto := mapVideo(v)
 	if d, err := s.Catalog.GetDrive(r.Context(), v.DriveID); err == nil {
@@ -886,10 +895,14 @@ func previewURL(v *catalog.Video) string {
 }
 
 func thumbnailURL(v *catalog.Video) string {
+	base := "/p/thumb/" + v.ID
 	if v.ThumbnailURL != "" {
-		return v.ThumbnailURL
+		base = v.ThumbnailURL
 	}
-	return "/p/thumb/" + v.ID
+	if !strings.HasPrefix(base, "/p/thumb/") || v.UpdatedAt.IsZero() {
+		return base
+	}
+	return base + "?v=" + strconv.FormatInt(v.UpdatedAt.UnixMilli(), 10)
 }
 
 func (s *Server) videoSource(v *catalog.Video) string {
@@ -919,6 +932,8 @@ func driveKindLabel(kind string) string {
 		return "夸克网盘"
 	case "p115":
 		return "115 网盘"
+	case "p123":
+		return "123 云盘"
 	case "pikpak":
 		return "PikPak"
 	case "wopan":

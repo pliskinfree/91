@@ -99,6 +99,27 @@ func TestPreviewURLFallsBackWithoutUpdatedAt(t *testing.T) {
 	}
 }
 
+func TestThumbnailURLVersionsLocalGeneratedThumbnails(t *testing.T) {
+	got := thumbnailURL(&catalog.Video{
+		ID:           "video-1",
+		ThumbnailURL: "/p/thumb/video-1",
+		UpdatedAt:    time.UnixMilli(1778863000123),
+	})
+	if got != "/p/thumb/video-1?v=1778863000123" {
+		t.Fatalf("thumbnail URL = %q, want versioned local URL", got)
+	}
+
+	remote := "https://thumb.example/video-1.jpg"
+	got = thumbnailURL(&catalog.Video{
+		ID:           "video-1",
+		ThumbnailURL: remote,
+		UpdatedAt:    time.UnixMilli(1778863000123),
+	})
+	if got != remote {
+		t.Fatalf("remote thumbnail URL = %q, want unchanged %q", got, remote)
+	}
+}
+
 func TestHandleHomePrioritizesVideosWithReadyThumbnails(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
