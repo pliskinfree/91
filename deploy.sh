@@ -49,7 +49,7 @@ Common overrides:
   FRONTEND_PORT=9191      Public web port
   FRONTEND_HOST=0.0.0.0   Public web bind address
   GO_VERSION=1.23.12
-  INSTALL_DEPS=0          Do not install missing Node/Go/ffmpeg
+  INSTALL_DEPS=0          Do not install missing Node/Go/ffmpeg/Python runtime deps
   CONFIGURE_UFW=0         Do not open UFW port automatically
   DEPLOY_USER=<user>      Service user; defaults to sudo user or root
 
@@ -130,7 +130,25 @@ apt_install() {
   export DEBIAN_FRONTEND=noninteractive
   log "installing base packages"
   apt-get update
-  apt-get install -y ca-certificates curl git ffmpeg openssl iproute2 build-essential
+  apt-get install -y ca-certificates curl git ffmpeg openssl iproute2 build-essential \
+    python3 python3-requests python3-bs4 python3-lxml python3-socks
+}
+
+verify_spider91_python_deps() {
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for 91Spider"
+  python3 - <<'PY' || die "missing Python modules for 91Spider: requests, bs4, lxml, socks"
+import importlib.util
+import sys
+
+missing = [
+    name
+    for name in ("requests", "bs4", "lxml", "socks")
+    if importlib.util.find_spec(name) is None
+]
+if missing:
+    print("missing Python modules: " + ", ".join(missing), file=sys.stderr)
+    sys.exit(1)
+PY
 }
 
 install_node() {
@@ -182,6 +200,7 @@ install_dependencies() {
   install_go
   command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg is required"
   command -v ffprobe >/dev/null 2>&1 || die "ffprobe is required"
+  verify_spider91_python_deps
 }
 
 ensure_ownership() {
